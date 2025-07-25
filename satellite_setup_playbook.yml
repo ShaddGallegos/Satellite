@@ -4,11 +4,22 @@
 # Author: Generated for automated Satellite deployment
 # Version: 1.0
 # Date: July 2025
-
+- name: Red Hat Satellite 6.17 Complete Setup
+  hosts: satellite_servers
+  become: true
+  gather_facts: true
+  
+  vars_files:
+    - vars/satellite_vars.yml
+    - vars/vault.yml  # Contains encrypted credentials
+  
+  tasks:
+    - name: Ensure necessary directories exist
+      ansible.builtin.file:
 - name: Complete Red Hat Satellite 6.17 Setup
   hosts: satellite_servers
-  become: yes
-  gather_facts: yes
+  become: true
+  gather_facts: true
   vars_files:
     - vars/satellite_vars.yml
     - vars/vault.yml  # Contains encrypted credentials
@@ -49,21 +60,21 @@
       user:
         name: admin
         groups: wheel
-        append: yes
-        create_home: yes
+        append: true
+        create_home: true
         shell: /bin/bash
 
     - name: Configure sudo for admin user
       lineinfile:
         path: /etc/sudoers.d/admin
         line: "admin   ALL=(ALL)       NOPASSWD: ALL"
-        create: yes
+        create: true
         mode: '0440'
 
     - name: Generate SSH keys for users
       user:
         name: "{{ item }}"
-        generate_ssh_key: yes
+        generate_ssh_key: true
         ssh_key_bits: 2048
         ssh_key_file: .ssh/id_rsa
       loop:
@@ -77,14 +88,14 @@
         key: "{{ lookup('file', '/home/' + item + '/.ssh/id_rsa.pub') }}"
       loop:
         - admin
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: Setup SSH key authentication for root
       authorized_key:
         user: root
         state: present
         key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
-      ignore_errors: yes
+      ignore_errors: true
 
     # ========================================
     # PHASE 2: Repository and Package Setup
@@ -114,6 +125,8 @@
       dnf:
         name: "*"
         state: latest
+        name: "*"
+        state: latest
 
     - name: Install Satellite and supporting packages
       dnf:
@@ -136,7 +149,7 @@
       copy:
         src: "/usr/share/syslinux/{{ item }}"
         dest: "/var/lib/tftpboot/{{ item }}"
-        remote_src: yes
+        remote_src: true
       loop:
         - pxelinux.0
         - ldlinux.c32
@@ -161,20 +174,20 @@
       template:
         src: templates/resolv.conf.j2
         dest: /etc/resolv.conf
-        backup: yes
+        backup: true
 
     - name: Start and enable firewalld
       systemd:
         name: firewalld
         state: started
-        enabled: yes
+        enabled: true
 
     - name: Configure firewall for Satellite services
       firewalld:
         service: "{{ item }}"
-        permanent: yes
+        permanent: true
         state: enabled
-        immediate: yes
+        immediate: true
       loop:
         - http
         - https
@@ -186,9 +199,9 @@
     - name: Configure firewall for Satellite specific ports
       firewalld:
         port: "{{ item }}"
-        permanent: yes
+        permanent: true
         state: enabled
-        immediate: yes
+        immediate: true
       loop:
         - "5647/tcp"   # Satellite communication
         - "8140/tcp"   # Puppet
@@ -199,10 +212,10 @@
 
     - name: Enable masquerading for NAT
       firewalld:
-        masquerade: yes
+        masquerade: true
         state: enabled
-        permanent: yes
-        immediate: yes
+        permanent: true
+        immediate: true
         zone: public
 
     # ========================================
@@ -244,7 +257,7 @@
       environment:
         RHC_USERNAME: "{{ redhat_username }}"
         RHC_PASSWORD: "{{ redhat_password }}"
-      ignore_errors: yes
+      ignore_errors: true
 
     # ========================================
     # PHASE 5: Service Configuration
@@ -257,19 +270,19 @@
       user:
         name: admin
         groups: "{{ item }}"
-        append: yes
+        append: true
       loop:
         - libvirt
         - foreman
         - dhcpd
         - named
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: Start and enable services
       systemd:
         name: "{{ item }}"
         state: started
-        enabled: yes
+        enabled: true
       loop:
         - dhcpd
         - tftp
@@ -289,7 +302,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
       register: satellite_status
       until: satellite_status.status == 200
       retries: 30
@@ -302,7 +315,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: form-multipart
         body:
           subscription[manifest]: "{{ manifest_file_content | b64decode }}"
@@ -315,7 +328,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
       loop: "{{ satellite_repositories }}"
       async: 3600
       poll: 0
@@ -334,7 +347,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           environment:
@@ -350,7 +363,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           content_view:
@@ -367,7 +380,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           activation_key:
@@ -392,7 +405,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           compute_resource:
@@ -409,7 +422,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           subnet:
@@ -432,7 +445,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           hostgroup:
@@ -461,7 +474,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           setting:
@@ -479,7 +492,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           provisioning_template:
@@ -493,7 +506,7 @@
       environment:
         HAMMER_USERNAME: "{{ satellite_admin_username }}"
         HAMMER_PASSWORD: "{{ satellite_admin_password }}"
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: Create sync plan
       uri:
@@ -502,7 +515,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
         body_format: json
         body:
           sync_plan:
@@ -540,7 +553,7 @@
         validate_certs: no
         user: "{{ satellite_admin_username }}"
         password: "{{ satellite_admin_password }}"
-        force_basic_auth: yes
+        force_basic_auth: true
       register: final_status
 
     - name: Display final status
