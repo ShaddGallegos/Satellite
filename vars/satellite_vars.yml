@@ -1,0 +1,448 @@
+# Red Hat Satellite 6.17 Variables Configuration
+# This file contains all the variables needed for the Satellite setup playbook
+# Customize these values according to your environment
+
+# ========================================
+# Basic Satellite Configuration
+# ========================================
+satellite_hostname: "satellite"
+satellite_fqdn: "satellite.prod.spg"
+satellite_ip: "10.168.128.102"
+satellite_organization: "RedHat"
+satellite_location: "Denver"
+satellite_organization_id: 1
+satellite_proxy_id: 1
+
+# ========================================
+# Admin Credentials (Override in vault.yml)
+# ========================================
+satellite_admin_username: "admin"
+satellite_admin_password: "{{ vault_satellite_admin_password }}"
+
+# Red Hat subscription credentials (Override in vault.yml)
+redhat_username: "{{ vault_redhat_username }}"
+redhat_password: "{{ vault_redhat_password }}"
+
+# ========================================
+# Network Configuration
+# ========================================
+dhcp_interface: "enp2s0"
+dhcp_gateway: "10.168.0.1"
+dhcp_range: "10.168.128.150 10.168.128.200"
+
+dns_interface: "enp2s0"
+dns_reverse_zone: "168.10.in-addr.arpa"
+satellite_domain: "prod.spg"
+dns_nameservers:
+  - "192.168.122.1"
+
+# ========================================
+# Subnets Configuration
+# ========================================
+subnets:
+  - name: "Production Network"
+    network: "10.168.0.0"
+    mask: "255.255.0.0"
+    gateway: "10.168.0.1"
+    dns_primary: "10.168.128.102"
+    dns_secondary: "192.168.122.1"
+
+# ========================================
+# Repository Configuration
+# ========================================
+satellite_repositories:
+  - name: "Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)"
+    repo_id: "rhel-9-for-x86_64-baseos-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)"
+    repo_id: "rhel-9-for-x86_64-appstream-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat Satellite Client 6 for RHEL 9 x86_64 (RPMs)"
+    repo_id: "satellite-client-6-for-rhel-9-x86_64-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat Satellite Maintenance 6.17 for RHEL 9 x86_64 (RPMs)"
+    repo_id: "satellite-maintenance-6.17-for-rhel-9-x86_64-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat Satellite Utils 6.17 for RHEL 9 x86_64 (RPMs)"
+    repo_id: "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat Enterprise Linux 9 for x86_64 - BaseOS (Kickstart)"
+    repo_id: "rhel-9-for-x86_64-baseos-kickstart"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+  - name: "Red Hat CodeReady Linux Builder for RHEL 9 x86_64 (RPMs)"
+    repo_id: "codeready-builder-for-rhel-9-x86_64-rpms"
+    product: "Red Hat CodeReady Linux Builder for x86_64"
+
+  - name: "Red Hat Enterprise Linux 9 for x86_64 - Supplementary (RPMs)"
+    repo_id: "rhel-9-for-x86_64-supplementary-rpms"
+    product: "Red Hat Enterprise Linux for x86_64"
+
+# ========================================
+# Lifecycle Environments
+# ========================================
+lifecycle_environments:
+  - name: "DEV_RHEL_9_x86_64"
+    prior_id: 1  # Library environment ID
+
+  - name: "TEST_RHEL_9_x86_64"
+    prior_id: 2  # DEV_RHEL_9_x86_64 environment ID
+
+  - name: "PROD_RHEL_9_x86_64"
+    prior_id: 3  # TEST_RHEL_9_x86_64 environment ID
+
+# ========================================
+# Content Views
+# ========================================
+content_views:
+  - name: "RHEL_9_x86_64"
+    label: "RHEL_9_x86_64"
+    repositories:
+      - "rhel-9-for-x86_64-baseos-rpms"
+      - "rhel-9-for-x86_64-appstream-rpms"
+      - "rhel-9-for-x86_64-baseos-kickstart"
+      - "rhel-9-for-x86_64-supplementary-rpms"
+      - "satellite-client-6-for-rhel-9-x86_64-rpms"
+      - "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+      - "codeready-builder-for-rhel-9-x86_64-rpms"
+
+  - name: "DEV_RHEL_9_x86_64"
+    label: "DEV_RHEL_9_x86_64"
+    repositories:
+      - "rhel-9-for-x86_64-baseos-rpms"
+      - "rhel-9-for-x86_64-appstream-rpms"
+      - "rhel-9-for-x86_64-baseos-kickstart"
+      - "rhel-9-for-x86_64-supplementary-rpms"
+      - "satellite-client-6-for-rhel-9-x86_64-rpms"
+      - "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+      - "codeready-builder-for-rhel-9-x86_64-rpms"
+
+  - name: "TEST_RHEL_9_x86_64"
+    label: "TEST_RHEL_9_x86_64"
+    repositories:
+      - "rhel-9-for-x86_64-baseos-rpms"
+      - "rhel-9-for-x86_64-appstream-rpms"
+      - "rhel-9-for-x86_64-baseos-kickstart"
+      - "rhel-9-for-x86_64-supplementary-rpms"
+      - "satellite-client-6-for-rhel-9-x86_64-rpms"
+      - "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+      - "codeready-builder-for-rhel-9-x86_64-rpms"
+
+  - name: "PROD_RHEL_9_x86_64"
+    label: "PROD_RHEL_9_x86_64"
+    repositories:
+      - "rhel-9-for-x86_64-baseos-rpms"
+      - "rhel-9-for-x86_64-appstream-rpms"
+      - "rhel-9-for-x86_64-baseos-kickstart"
+      - "rhel-9-for-x86_64-supplementary-rpms"
+      - "satellite-client-6-for-rhel-9-x86_64-rpms"
+      - "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+      - "codeready-builder-for-rhel-9-x86_64-rpms"
+
+# ========================================
+# Activation Keys
+# ========================================
+activation_keys:
+  - name: "DEV_RHEL_9_x86_64"
+    environment_id: 2  # DEV_RHEL_9_x86_64
+    content_view_id: 1  # RHEL_9_x86_64
+    subscriptions:
+      - "Red Hat Enterprise Linux Server"
+    repository_sets:
+      - content_id: "codeready-builder-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-appstream-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-baseos-kickstart"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-baseos-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-supplementary-rpms"
+        enabled: false
+      - content_id: "satellite-client-6-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+        enabled: false
+
+  - name: "TEST_RHEL_9_x86_64"
+    environment_id: 3  # TEST_RHEL_9_x86_64
+    content_view_id: 1  # RHEL_9_x86_64
+    subscriptions:
+      - "Red Hat Enterprise Linux Server"
+    repository_sets:
+      - content_id: "codeready-builder-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-appstream-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-baseos-kickstart"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-baseos-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-supplementary-rpms"
+        enabled: false
+      - content_id: "satellite-client-6-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+        enabled: false
+
+  - name: "PROD_RHEL_9_x86_64"
+    environment_id: 4  # PROD_RHEL_9_x86_64
+    content_view_id: 1  # RHEL_9_x86_64
+    subscriptions:
+      - "Red Hat Enterprise Linux Server"
+    repository_sets:
+      - content_id: "codeready-builder-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-appstream-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-baseos-kickstart"
+        enabled: false
+      - content_id: "rhel-9-for-x86_64-baseos-rpms"
+        enabled: true
+      - content_id: "rhel-9-for-x86_64-supplementary-rpms"
+        enabled: false
+      - content_id: "satellite-client-6-for-rhel-9-x86_64-rpms"
+        enabled: false
+      - content_id: "satellite-utils-6.17-for-rhel-9-x86_64-rpms"
+        enabled: false
+
+# ========================================
+# Host Collections
+# ========================================
+host_collections:
+  - name: "RHEL_9_x86_64"
+    unlimited_hosts: true
+    description: "Host collection for RHEL 9 x86_64 systems"
+
+# ========================================
+# Compute Resources
+# ========================================
+libvirt_compute_resource:
+  name: "Libvirt"
+  provider: "Libvirt"
+  url: "qemu+ssh://root@10.168.0.1/system"
+  display_type: "vnc"
+
+# ========================================
+# Compute Profiles
+# ========================================
+compute_profiles:
+  - name: "1-Small"
+    memory: "2147483648"  # 2GB
+    cpu: "1"
+    storage: "10"  # 10GB
+
+  - name: "2-Medium"
+    memory: "4294967296"  # 4GB
+    cpu: "2"
+    storage: "15"  # 15GB
+
+  - name: "3-Large"
+    memory: "8589934592"  # 8GB
+    cpu: "4"
+    storage: "20"  # 20GB
+
+# ========================================
+# Host Groups
+# ========================================
+host_groups:
+  - name: "Standard_Nodes"
+    environment_id: 2  # DEV_RHEL_9_x86_64
+    content_view_id: 1  # RHEL_9_x86_64
+    compute_resource_id: 1
+    compute_profile: "1-Small"
+    operatingsystem_id: 1  # RHEL 9.6
+    architecture_id: 1     # x86_64
+    ptable_id: 1          # Kickstart default
+    root_pass: "r3dh4t7!"  # As specified in Setup_satellite.txt
+    domain: "prod.spg"
+    content_source: "satellite.prod.spg"
+    openscap_capsule: "satellite.prod.spg"
+
+# ========================================
+# Sync Plan Configuration
+# ========================================
+sync_plan:
+  name: "RHEL_9_x86_64"
+  interval: "weekly"
+  sync_date: "2025-01-01 03:00:00 UTC"
+  enabled: true
+
+# ========================================
+# Template Configuration
+# ========================================
+rhel9_kickstart_template_id: 1
+rhel9_kickstart_template_content: |
+  #version=RHEL9
+  # System authorization information
+  auth --enableshadow --passalgo=sha512
+  
+  # Use network installation
+  url --url="https://{{ satellite_fqdn }}/pulp/content/Default_Organization/Library/content/dist/rhel9/9/x86_64/baseos/os"
+  
+  # Use graphical install
+  text
+  
+  # Run the Setup Agent on first boot
+  firstboot --enable
+  
+  ignoredisk --only-use=vda
+  
+  # Keyboard layouts
+  keyboard --vckeymap=us --xlayouts='us'
+  
+  # System language
+  lang en_US.UTF-8
+  
+  # Network information
+  network --bootproto=dhcp --device=eth0 --ipv6=auto --activate
+  network --hostname={{ ansible_fqdn }}
+  
+  # Root password (encrypted)
+  rootpw --iscrypted {{ vault_default_root_password_encrypted }}
+  
+  # System services
+  services --enabled="chronyd"
+  
+  # System timezone
+  timezone America/Denver --isUtc
+  
+  # System bootloader configuration
+  bootloader --append=" crashkernel=auto" --location=mbr --boot-drive=vda
+  
+  # Partition clearing information
+  clearpart --none --initlabel
+  
+  # Disk partitioning information
+  part /boot --fstype="xfs" --ondisk=vda --size=1024
+  part pv.157 --fstype="lvmpv" --ondisk=vda --size=1 --grow
+  volgroup rhel --pesize=4096 pv.157
+  logvol / --fstype="xfs" --size=1 --grow --name=root --vgname=rhel
+  logvol swap --fstype="swap" --size=2048 --name=swap --vgname=rhel
+  
+  %packages
+  @^minimal-environment
+  @standard
+  @Base
+  @Core
+  kexec-tools
+  rhc
+  insights-client
+  %end
+  
+  %addon com_redhat_kdump --enable --reserve-mb='auto'
+  %end
+  
+  %anaconda
+  pwpolicy root --minlen=6 --minquality=1 --notstrict --nochanges --notempty
+  pwpolicy user --minlen=6 --minquality=1 --notstrict --nochanges --emptyok
+  pwpolicy luks --minlen=6 --minquality=1 --notstrict --nochanges --notempty
+  %end
+  
+  %post --log=/var/log/ks-post.log
+  # Update packages and install RHC components
+  sudo dnf -y update rhc katello gopher
+  sudo dnf -y install rhc-worker-playbook
+  
+  # Register with Red Hat Insights
+  /usr/bin/rhc connect --activation-key={{ activation_key }} --organization={{ satellite_organization }}
+  
+  # Enable and start insights-client
+  systemctl enable insights-client
+  systemctl start insights-client
+  
+  # Configure remote execution
+  systemctl enable sshd
+  systemctl start sshd
+  
+  # Install Satellite client certificate
+  wget -O /etc/rhsm/ca/katello-server-ca.pem https://{{ satellite_fqdn }}/pub/katello-server-ca.pem
+  %end
+
+# ========================================
+# DNS Configuration Template
+# ========================================
+dns_zones:
+  - name: "prod.spg"
+    type: "master"
+    file: "/var/named/prod.spg.zone"
+    records:
+      - name: "satellite"
+        type: "A"
+        value: "10.168.128.102"
+      - name: "@"
+        type: "NS"
+        value: "satellite.prod.spg."
+      - name: "@"
+        type: "SOA"
+        value: "satellite.prod.spg. admin.prod.spg. (2025010101 3H 15M 1W 1D)"
+
+# ========================================
+# Additional Settings
+# ========================================
+# Foreman settings
+foreman_settings:
+  default_organization: "{{ satellite_organization }}"
+  default_location: "{{ satellite_location }}"
+  entries_per_page: 50
+  fix_db_cache: true
+  use_uuid_for_certificates: true
+  clean_up_failed_deployment: true
+
+# Katello settings
+katello_settings:
+  cdn_ssl_version: "TLSv1_2"
+  download_policy: "immediate"
+  default_download_policy: "immediate"
+  pulp_export_destination: "/var/lib/pulp/exports"
+  remote_execution_by_default: true
+
+# Security settings
+security_settings:
+  restrict_registered_smart_proxies: true
+  require_ssl_smart_proxies: true
+  ssl_ca_file: "/etc/pki/katello/certs/katello-default-ca.crt"
+  ssl_certificate: "/etc/pki/katello/certs/katello-apache.crt"
+  ssl_priv_key: "/etc/pki/katello/private/katello-apache.key"
+
+# ========================================
+# Backup Configuration Best Practices
+# ========================================
+satellite_backup_dir: "/backup/satellite"
+satellite_backup_retention_days: 30
+
+# ========================================
+# Performance Tuning Best Practices
+# ========================================
+postgresql_settings:
+  shared_buffers: "1GB"
+  effective_cache_size: "4GB"
+  work_mem: "4MB"
+  checkpoint_completion_target: 0.9
+  wal_buffers: "16MB"
+  max_connections: 200
+
+pulp_settings:
+  content_origin: "https://{{ satellite_fqdn }}"
+  allowed_content_checksums: ["sha1", "sha224", "sha256", "sha384", "sha512"]
+
+# ========================================
+# Monitoring and Alerting Configuration
+# ========================================
+monitoring_settings:
+  check_interval_minutes: 5
+  alert_email: "admin@prod.spg"
+  critical_services:
+    - "foreman"
+    - "httpd"
+    - "postgresql"
+    - "pulpcore-api"
+    - "pulpcore-content"
+    - "dhcpd"
+    - "named"
+    - "tftp"

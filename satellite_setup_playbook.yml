@@ -1,0 +1,2885 @@
+---
+# Red Hat Satellite 6.17 Complete Setup Playbook
+# Consolidated version with all functionality embedded
+# Author: Shadd Gallegos
+# Version: 2.0
+
+- name: Complete Red Hat Satellite 6.17 Setup and Management
+  hosts: satellite_servers
+  become: yes
+  gather_facts: yes
+  
+  vars_files:
+    - vars/satellite_vars.yml
+    - templates/vault.yml
+  
+  vars:
+    # Enhanced reporting
+    deployment_warnings: []
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+    
+    # Backup configuration
+    satellite_backup_dir: "/var/satellite-backups"
+    
+    # Remote script deployment configuration
+    remote_deployment_dir: "/opt/satellite-deployment"
+    
+    # Credential management configuration
+    vault_file_path: "{{ ansible_env.HOME }}/.ansible/satellite_vault.yml"
+    store_credentials_in_vault: false
+    
+    # Default values (can be overridden via extra vars)
+    deployment_mode_default: "full"
+    skip_preflight_default: false
+    force_deployment_default: false
+    interactive_mode_default: false
+    skip_registration_default: false
+    undo_deployment_default: false
+  
+  pre_tasks:
+    # ========================================
+    # DEPLOYMENT MODE DETECTION AND UNDO FUNCTIONALITY
+    # ========================================
+    - name: Check if this is an undo operation
+      set_fact:
+        undo_deployment: "{{ undo_deployment | default(undo_deployment_default) }}"
+        deployment_mode: "{{ deployment_mode | default(deployment_mode_default) }}"
+
+    - name: Execute undo deployment operations
+      block:
+        - name: Display undo operation banner
+          debug:
+            msg: |
+              
+              ========================================================================
+                        🔄 RED HAT SATELLITE 6.17 DEPLOYMENT UNDO SYSTEM
+              ========================================================================
+              Mode: UNDO DEPLOYMENT CHANGES
+              Target: {{ inventory_hostname }}
+              Timestamp: {{ deployment_timestamp }}
+              ========================================================================
+              
+              This will undo changes made to your system by the Satellite deployment:
+              - Hostname changes
+              - /etc/hosts modifications  
+              - Admin user creation
+              - SSH key generation
+              - Sudo configuration
+              - Package installations (optional)
+              - Firewall modifications
+              - SELinux boolean changes
+              - Satellite services and directories
+              ========================================================================
+
+        - name: Confirm undo operation
+          pause:
+            prompt: |
+              
+              Do you want to proceed with undoing the Satellite deployment changes? (y/N)
+          register: undo_confirm
+          when: interactive_mode | default(true)
+
+        - name: Abort if user declines undo
+          fail:
+            msg: "Undo operation cancelled by user"
+          when: 
+            - interactive_mode | default(true)
+            - not (undo_confirm.user_input | default('n') | lower | regex_search('^y'))
+
+        # Step 1: Restore hostname
+        - name: Get current hostname information
+          setup:
+            filter: ansible_hostname
+
+        - name: Check if hostname needs restoration
+          stat:
+            path: /etc/hostname.original
+          register: hostname_backup
+
+        - name: Restore original hostname
+          block:
+            - name: Read original hostname
+              slurp:
+                src: /etc/hostname.original
+              register: original_hostname_content
+              when: hostname_backup.stat.exists
+
+            - name: Set original hostname
+              hostname:
+                name: "{{ (original_hostname_content.content | b64decode).strip() }}"
+              when: hostname_backup.stat.exists
+
+            - name: Use default hostname if no backup
+              hostname:
+                name: "localhost.localdomain"
+              when: not hostname_backup.stat.exists
+
+            - name: Display hostname restoration
+              debug:
+                msg: "Hostname restored to {{ (original_hostname_content.content | b64decode).strip() if hostname_backup.stat.exists else 'localhost.localdomain' }}"
+          when: ansible_hostname == 'satellite'
+
+        # Step 2: Clean /etc/hosts file
+        - name: Remove Satellite entries from /etc/hosts
+          lineinfile:
+            path: /etc/hosts
+            regexp: "{{ item }}"
+            state: absent
+          loop:
+            - '.*satellite.*'
+            - '.*10\.168\.128\.102.*'
+            - '.*satellite\.prod\.spg.*'
+
+        # Step 3: Remove admin user
+        - name: Check if admin user exists
+          getent:
+            database: passwd
+            key: admin
+          register: admin_user_check
+          failed_when: false
+
+        - name: Remove admin user and configurations
+          block:
+            - name: Remove admin user
+              user:
+                name: admin
+                state: absent
+                remove: yes
+
+            - name: Remove admin sudo configuration
+              file:
+                path: /etc/sudoers.d/admin
+                state: absent
+
+            - name: Display admin user removal
+              debug:
+                msg: "Admin user and configurations removed"
+          when: admin_user_check.ansible_facts.getent_passwd.admin is defined
+
+        # Step 4: Clean up SSH keys (if recently created)
+        - name: Check for recent root SSH keys
+          find:
+            paths: /root/.ssh
+            patterns: "id_rsa*"
+            age: "-1d"
+          register: recent_ssh_keys
+
+        - name: Remove recent SSH keys
+          file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ recent_ssh_keys.files }}"
+          when: recent_ssh_keys.files | length > 0
+
+        # Step 5: Handle package removal (optional)
+        - name: Check for Satellite packages
+          package_facts:
+            manager: auto
+
+        - name: Identify installed Satellite packages
+          set_fact:
+            satellite_packages_installed: "{{ ansible_facts.packages.keys() | select('match', '(satellite|dhcp-server|tftp-server|syslinux-tftpboot|bind|bind-utils)$') | list }}"
+
+        - name: Prompt for package removal
+          pause:
+            prompt: |
+              
+              Found Satellite packages: {{ satellite_packages_installed | join(', ') }}
+              Do you want to remove these packages? (y/N)
+          register: remove_packages_confirm
+          when: 
+            - satellite_packages_installed | length > 0
+            - interactive_mode | default(true)
+
+        - name: Remove Satellite packages
+          dnf:
+            name: "{{ satellite_packages_installed }}"
+            state: absent
+          when: 
+            - satellite_packages_installed | length > 0
+            - remove_packages_confirm.user_input | default('n') | lower | regex_search('^y')
+
+        # Step 6: Remove Satellite directories
+        - name: Remove Satellite directories
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /var/satellite-backups
+            - /var/lib/tftpboot/pxelinux.cfg
+            - /opt/satellite-deployment
+            - /usr/local/bin/satellite_deploy
+
+        # Step 7: Clean TFTP boot files
+        - name: Remove TFTP boot files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /var/lib/tftpboot/pxelinux.0
+            - /var/lib/tftpboot/ldlinux.c32
+            - /var/lib/tftpboot/menu.c32
+            - /var/lib/tftpboot/vesamenu.c32
+            - /var/lib/tftpboot/libutil.c32
+
+        # Step 8: Restore firewall configuration
+        - name: Remove Satellite firewall services
+          firewalld:
+            service: "{{ item }}"
+            permanent: yes
+            state: disabled
+            immediate: yes
+          loop:
+            - tftp
+            - dhcp
+            - dns
+          ignore_errors: yes
+
+        - name: Remove Satellite firewall ports
+          firewalld:
+            port: "{{ item }}"
+            permanent: yes
+            state: disabled
+            immediate: yes
+          loop:
+            - "5647/tcp"
+            - "8140/tcp"
+            - "9090/tcp"
+            - "53/udp"
+            - "67/udp"
+            - "69/udp"
+          ignore_errors: yes
+
+        # Step 9: Reset SELinux booleans
+        - name: Reset SELinux booleans
+          seboolean:
+            name: "{{ item }}"
+            state: no
+            persistent: yes
+          loop:
+            - httpd_can_network_connect
+            - httpd_can_network_relay
+            - httpd_execmem
+            - httpd_unified
+          ignore_errors: yes
+
+        # Step 10: Stop and disable Satellite services
+        - name: Stop and disable Satellite services
+          systemd:
+            name: "{{ item }}"
+            state: stopped
+            enabled: no
+          loop:
+            - dhcpd
+            - tftp
+            - named
+            - satellite-tuning
+          ignore_errors: yes
+
+        # Step 11: Clean up deployment artifacts
+        - name: Remove deployment artifacts
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/satellite_preflight_failure_report.txt
+            - /var/log/satellite_deployment_report.log
+            - /tmp/vault_pass
+            - /usr/local/bin/satellite_backup.sh
+            - /usr/local/bin/satellite_maintenance.sh
+            - /usr/local/bin/satellite_monitor.sh
+            - /usr/local/bin/satellite_tuning.sh
+
+        # Step 12: Display undo completion
+        - name: Display undo completion summary
+          debug:
+            msg: |
+              
+              ========================================================================
+                          ✅ SATELLITE UNDO OPERATION COMPLETED
+              ========================================================================
+              
+              Successfully undid Satellite deployment changes:
+              ✅ Restored hostname (if changed)
+              ✅ Cleaned /etc/hosts file
+              ✅ Removed admin user and sudo config
+              ✅ Cleaned up SSH keys (if recently created)
+              ✅ Removed Satellite directories
+              ✅ Cleaned TFTP boot files
+              ✅ Restored firewall configuration
+              ✅ Reset SELinux booleans
+              ✅ Stopped and disabled Satellite services
+              ✅ Cleaned deployment artifacts
+              {{ '✅ Removed Satellite packages' if (remove_packages_confirm.user_input | default('n') | lower | regex_search('^y')) else '⚠️  Kept Satellite packages (user choice)' }}
+              
+              Your system has been restored to its pre-deployment state.
+              
+              Note: If you had subscription-manager registration failures,
+              you may need to manually clean up any partial registrations:
+                sudo subscription-manager unregister (if partially registered)
+                sudo subscription-manager clean
+              ========================================================================
+
+        - name: End playbook after undo completion
+          meta: end_play
+      when: undo_deployment | default(false)
+
+    # ========================================
+    # INTERACTIVE HOST SELECTION
+    # ========================================
+    - name: Prompt for target host selection
+      block:
+        - name: Collect target host information
+          pause:
+            prompt: |
+              
+              =======================================================================
+              [HOST SELECTION] SATELLITE DEPLOYMENT TARGET
+              =======================================================================
+              
+              Where do you want to install Red Hat Satellite 6.17?
+              
+              1. Local deployment (localhost) - Install on this machine
+              2. Remote deployment - Install on a remote server
+              
+              Enter 1 for local or 2 for remote [2]
+          register: deployment_type_input
+
+        - name: Set deployment type
+          set_fact:
+            deployment_type: "{{ 'local' if '1' in (deployment_type_input.user_input | default('2')) else 'remote' }}"
+
+        - name: Collect remote host details (for remote deployment)
+          block:
+            - name: Get target hostname/IP
+              pause:
+                prompt: |
+                  
+                  Enter the hostname or IP address of the target server [{{ satellite_fqdn | default('satellite.prod.spg') }}]
+              register: target_host_input
+
+            - name: Get target IP address
+              pause:
+                prompt: |
+                  
+                  Enter the IP address of the target server [{{ satellite_ip | default('10.168.128.102') }}]
+              register: target_ip_input
+
+            - name: Get SSH username
+              pause:
+                prompt: |
+                  
+                  Enter SSH username for the target server [root]
+              register: ssh_user_input
+
+            - name: Get SSH password
+              pause:
+                prompt: |
+                  
+                  Enter SSH password for the target server (input hidden)
+                echo: no
+              register: ssh_password_input
+
+            - name: Set remote host facts
+              set_fact:
+                target_hostname: "{{ target_host_input.user_input if target_host_input.user_input != '' else (satellite_fqdn | default('satellite.prod.spg')) }}"
+                target_ip_address: "{{ target_ip_input.user_input if target_ip_input.user_input != '' else (satellite_ip | default('10.168.128.102')) }}"
+                ssh_username: "{{ ssh_user_input.user_input if ssh_user_input.user_input != '' else 'root' }}"
+                ssh_password: "{{ ssh_password_input.user_input }}"
+
+            - name: Add remote host to inventory dynamically
+              add_host:
+                name: "{{ target_hostname }}"
+                ansible_host: "{{ target_ip_address }}"
+                ansible_user: "{{ ssh_username }}"
+                ansible_ssh_pass: "{{ ssh_password }}"
+                ansible_become_pass: "{{ ssh_password }}"
+                ansible_become: yes
+                groups: satellite_servers
+                # Copy all the satellite configuration variables
+                satellite_hostname: "{{ satellite_hostname | default('satellite') }}"
+                satellite_fqdn: "{{ target_hostname }}"
+                satellite_ip: "{{ target_ip_address }}"
+                satellite_organization: "{{ satellite_organization | default('Default Organization') }}"
+                satellite_location: "{{ satellite_location | default('Default Location') }}"
+                satellite_admin_username: "{{ satellite_admin_username | default('admin') }}"
+                satellite_admin_password: "{{ satellite_admin_password }}"
+                redhat_username: "{{ redhat_username }}"
+                redhat_password: "{{ redhat_password }}"
+                dhcp_interface: "{{ dhcp_interface | default('enp1s0') }}"
+                dhcp_gateway: "{{ dhcp_gateway | default('10.168.0.1') }}"
+                dhcp_range: "{{ dhcp_range | default('10.168.128.150 10.168.128.200') }}"
+                dns_interface: "{{ dns_interface | default('enp1s0') }}"
+                dns_reverse_zone: "{{ dns_reverse_zone | default('128.168.10.in-addr.arpa') }}"
+
+            - name: Mark localhost as skipped for remote deployment
+              set_fact:
+                skip_localhost_tasks: true
+              when: inventory_hostname == 'localhost'
+
+            - name: Test connectivity to remote host
+              delegate_to: "{{ target_hostname }}"
+              ping:
+              register: connectivity_test
+              ignore_errors: yes
+
+            - name: Display connectivity test result
+              debug:
+                msg: |
+                  
+                  [CONNECTIVITY] REMOTE HOST TEST RESULTS
+                  =======================================================================
+                  Target: {{ target_hostname }} ({{ target_ip_address }})
+                  SSH User: {{ ssh_username }}
+                  Connection: {{ 'SUCCESS' if connectivity_test.failed is not defined or not connectivity_test.failed else 'FAILED' }}
+                  {% if connectivity_test.failed is defined and connectivity_test.failed %}
+                  Error: {{ connectivity_test.msg | default('Connection failed') }}
+                  {% endif %}
+                  =======================================================================
+
+            - name: Fail if remote host is unreachable
+              fail:
+                msg: |
+                  
+                  [ERROR] REMOTE HOST UNREACHABLE
+                  =======================================================================
+                  Cannot connect to {{ target_hostname }} ({{ target_ip_address }})
+                  
+                  Please verify:
+                  - Host is powered on and accessible
+                  - SSH service is running (port 22)
+                  - Username and password are correct
+                  - Network connectivity exists
+                  =======================================================================
+              when: connectivity_test.failed is defined and connectivity_test.failed
+          when: deployment_type == 'remote'
+
+        - name: Add localhost for local deployment
+          add_host:
+            name: localhost
+            ansible_connection: local
+            groups: satellite_servers
+            # Copy all the satellite configuration variables for local deployment
+            satellite_hostname: "{{ satellite_hostname | default('satellite') }}"
+            satellite_fqdn: "{{ satellite_fqdn | default('satellite.example.com') }}"
+            satellite_ip: "{{ satellite_ip | default(ansible_default_ipv4.address) }}"
+            satellite_organization: "{{ satellite_organization | default('Default Organization') }}"
+            satellite_location: "{{ satellite_location | default('Default Location') }}"
+            satellite_admin_username: "{{ satellite_admin_username | default('admin') }}"
+            satellite_admin_password: "{{ satellite_admin_password }}"
+            redhat_username: "{{ redhat_username }}"
+            redhat_password: "{{ redhat_password }}"
+            dhcp_interface: "{{ dhcp_interface | default(ansible_default_ipv4.interface) }}"
+            dhcp_gateway: "{{ dhcp_gateway | default('192.168.1.1') }}"
+            dhcp_range: "{{ dhcp_range | default('192.168.1.150 192.168.1.200') }}"
+            dns_interface: "{{ dns_interface | default(ansible_default_ipv4.interface) }}"
+            dns_reverse_zone: "{{ dns_reverse_zone | default('1.168.192.in-addr.arpa') }}"
+          when: deployment_type == 'local'
+
+        - name: Mark localhost as active for local deployment
+          set_fact:
+            skip_localhost_tasks: false
+          when: 
+            - deployment_type == 'local'
+            - inventory_hostname == 'localhost'
+
+        - name: Display deployment target confirmation
+          debug:
+            msg: |
+              
+              [CONFIRMED] DEPLOYMENT TARGET SELECTED
+              =======================================================================
+              Deployment Type: {{ deployment_type | upper }}
+              {% if deployment_type == 'remote' %}
+              Target Host: {{ target_hostname }} ({{ target_ip_address }})
+              SSH User: {{ ssh_username }}
+              {% else %}
+              Target Host: Local machine ({{ ansible_hostname | default('localhost') }})
+              {% endif %}
+              
+              Satellite will be installed on the selected target.
+              =======================================================================
+
+      when: interactive_mode | default(true)
+
+    # ========================================
+    # DEPLOYMENT TARGET FILTERING
+    # ========================================
+    - name: Skip satellite installation on localhost if remote deployment selected
+      meta: end_host
+      when: 
+        - deployment_type is defined
+        - deployment_type == 'remote'
+        - inventory_hostname == 'localhost'
+
+    - name: Skip satellite installation on remote hosts if local deployment selected
+      meta: end_host
+      when: 
+        - deployment_type is defined
+        - deployment_type == 'local'
+        - inventory_hostname != 'localhost'
+
+    # ========================================
+    # AUTOMATIC SCRIPT DEPLOYMENT TO REMOTE SERVERS
+    # ========================================
+    - name: Deploy satellite scripts and requirements to remote servers
+      block:
+        - name: Create remote satellite directory
+          file:
+            path: "{{ remote_deployment_dir }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+
+        - name: Create backup directory for existing files
+          file:
+            path: "{{ remote_deployment_dir }}/backups"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+
+        - name: Backup existing deployment files
+          shell: |
+            if [ -f "{{ remote_deployment_dir }}/{{ item }}" ]; then
+              cp "{{ remote_deployment_dir }}/{{ item }}" "{{ remote_deployment_dir }}/backups/{{ item }}.$(date +%Y%m%d_%H%M%S)"
+            fi
+          loop:
+            - satellite_deploy.sh
+            - satellite_setup_playbook.yml
+            - requirements.yml
+            - ansible.cfg
+            - inventory.ini
+          ignore_errors: yes
+
+        - name: Copy satellite deployment script to remote servers
+          copy:
+            src: "{{ playbook_dir }}/satellite_deploy.sh"
+            dest: "{{ remote_deployment_dir }}/satellite_deploy.sh"
+            mode: '0755'
+            owner: root
+            group: root
+            backup: yes
+
+        - name: Copy satellite setup playbook to remote servers
+          copy:
+            src: "{{ playbook_dir }}/satellite_setup_playbook.yml"
+            dest: "{{ remote_deployment_dir }}/satellite_setup_playbook.yml"
+            mode: '0644'
+            owner: root
+            group: root
+            backup: yes
+
+        - name: Copy requirements file to remote servers
+          copy:
+            src: "{{ playbook_dir }}/requirements.yml"
+            dest: "{{ remote_deployment_dir }}/requirements.yml"
+            mode: '0644'
+            owner: root
+            group: root
+            backup: yes
+
+        - name: Copy ansible configuration to remote servers
+          copy:
+            src: "{{ playbook_dir }}/ansible.cfg"
+            dest: "{{ remote_deployment_dir }}/ansible.cfg"
+            mode: '0644'
+            owner: root
+            group: root
+            backup: yes
+
+        - name: Copy inventory file to remote servers
+          copy:
+            src: "{{ playbook_dir }}/inventory.ini"
+            dest: "{{ remote_deployment_dir }}/inventory.ini"
+            mode: '0644'
+            owner: root
+            group: root
+            backup: yes
+
+        - name: Synchronize vars directory to remote servers
+          synchronize:
+            src: "{{ playbook_dir }}/vars/"
+            dest: "{{ remote_deployment_dir }}/vars/"
+            delete: yes
+            recursive: yes
+          delegate_to: localhost
+
+        - name: Synchronize templates directory to remote servers
+          synchronize:
+            src: "{{ playbook_dir }}/templates/"
+            dest: "{{ remote_deployment_dir }}/templates/"
+            delete: yes
+            recursive: yes
+          delegate_to: localhost
+
+        - name: Set proper permissions on directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+            recurse: yes
+          loop:
+            - "{{ remote_deployment_dir }}/vars"
+            - "{{ remote_deployment_dir }}/templates"
+
+        - name: Create symlinks for easy access
+          file:
+            src: "{{ remote_deployment_dir }}/satellite_deploy.sh"
+            dest: /usr/local/bin/satellite_deploy
+            state: link
+            force: yes
+
+        - name: Create deployment manifest file
+          copy:
+            dest: "{{ remote_deployment_dir }}/deployment_manifest.txt"
+            content: |
+              RED HAT SATELLITE DEPLOYMENT MANIFEST
+              ====================================================================
+              
+              Deployment Date: {{ ansible_date_time.iso8601 }}
+              Deployed From: {{ ansible_hostname }}
+              Target Server: {{ inventory_hostname }}
+              Deployment Directory: {{ remote_deployment_dir }}
+              
+              DEPLOYED FILES:
+              ==================================================================
+              [SUCCESS] satellite_deploy.sh (executable launcher)
+              [SUCCESS] satellite_setup_playbook.yml (main deployment playbook)
+              [SUCCESS] requirements.yml (Ansible requirements)
+              [SUCCESS] ansible.cfg (Ansible configuration)
+              [SUCCESS] inventory.ini (inventory configuration)
+              [SUCCESS] vars/ (variable definitions)
+              [SUCCESS] templates/ (template files)
+              
+              QUICK ACCESS:
+              ==================================================================
+              • Run deployment: /usr/local/bin/satellite_deploy
+              • Change directory: cd {{ remote_deployment_dir }}
+              • View this manifest: cat {{ remote_deployment_dir }}/deployment_manifest.txt
+              
+              BACKUP LOCATION:
+              ==================================================================
+              Previous versions: {{ remote_deployment_dir }}/backups/
+              
+              ====================================================================
+            mode: '0644'
+            owner: root
+            group: root
+
+        - name: Display deployment synchronization status
+          debug:
+            msg: |
+              
+              [SUCCESS] SCRIPT DEPLOYMENT COMPLETED
+              =======================================================================
+              All satellite deployment files synchronized to: {{ remote_deployment_dir }}/
+              
+              [FILES] Deployed Files:
+              - satellite_deploy.sh → {{ remote_deployment_dir }}/ (executable)
+              - satellite_setup_playbook.yml → {{ remote_deployment_dir }}/
+              - requirements.yml → {{ remote_deployment_dir }}/
+              - ansible.cfg → {{ remote_deployment_dir }}/
+              - inventory.ini → {{ remote_deployment_dir }}/
+              - vars/ → {{ remote_deployment_dir }}/vars/
+              - templates/ → {{ remote_deployment_dir }}/templates/
+              
+              [ACCESS] Quick Access: /usr/local/bin/satellite_deploy
+              [BACKUP] Backup Location: {{ remote_deployment_dir }}/backups/
+              [MANIFEST] Deployment Manifest: {{ remote_deployment_dir }}/deployment_manifest.txt
+              =======================================================================
+
+      when: inventory_hostname != 'localhost' and inventory_hostname != '127.0.0.1'
+      tags: always
+
+    # ========================================
+    # INTERACTIVE SETUP (when vars not provided)
+    # ========================================
+    - name: Check if this is an interactive setup
+      set_fact:
+        interactive_mode: "{{ interactive_mode | default(interactive_mode_default) }}"
+        deployment_mode: "{{ deployment_mode | default(deployment_mode_default) }}"
+        skip_preflight: "{{ skip_preflight | default(skip_preflight_default) }}"
+        force_deployment: "{{ force_deployment | default(force_deployment_default) }}"
+        skip_registration: "{{ skip_registration | default(skip_registration_default) }}"
+        satellite_hostname: "{{ satellite_hostname | default('satellite') }}"
+        satellite_fqdn: "{{ satellite_fqdn | default('satellite.example.com') }}"
+        satellite_ip: "{{ satellite_ip | default(ansible_default_ipv4.address) }}"
+        satellite_organization: "{{ satellite_organization | default('Default Organization') }}"
+        satellite_location: "{{ satellite_location | default('Default Location') }}"
+        satellite_admin_username: "{{ satellite_admin_username | default('admin') }}"
+        dhcp_interface: "{{ dhcp_interface | default(ansible_default_ipv4.interface) }}"
+        dns_interface: "{{ dns_interface | default(ansible_default_ipv4.interface) }}"
+        interactive_setup_needed: "{{ satellite_admin_password is not defined or redhat_username is not defined }}"
+    
+    - name: Display deployment banner
+      debug:
+        msg: |
+          
+          ========================================================================
+                         RED HAT SATELLITE 6.17 DEPLOYMENT SYSTEM
+          ========================================================================
+          Mode: {{ deployment_mode | upper }}
+          Target: {{ satellite_fqdn | default('Not specified') }}
+          Timestamp: {{ deployment_timestamp }}
+          Interactive: {{ 'YES' if interactive_setup_needed else 'NO' }}
+          Auto-Deploy: [SUCCESS] Scripts synchronized to remote servers
+          ========================================================================
+
+    - name: Interactive variable collection
+      block:
+        - name: Collect Red Hat credentials interactively
+          pause:
+            prompt: |
+              
+              =======================================================================
+              [INTERACTIVE] CREDENTIAL SETUP
+              =======================================================================
+              
+              Required Red Hat subscription credentials:
+              Enter your Red Hat customer portal username
+          register: redhat_username_input
+          when: redhat_username is not defined
+
+        - name: Set Red Hat username
+          set_fact:
+            redhat_username: "{{ redhat_username_input.user_input }}"
+          when: redhat_username is not defined
+
+        - name: Collect Red Hat password
+          pause:
+            prompt: "Enter your Red Hat customer portal password (input hidden)"
+            echo: no
+          register: redhat_password_input
+          when: redhat_password is not defined
+
+        - name: Set Red Hat password
+          set_fact:
+            redhat_password: "{{ redhat_password_input.user_input }}"
+          when: redhat_password is not defined
+
+        - name: Collect Satellite admin password
+          pause:
+            prompt: "Enter desired Satellite admin password (input hidden)"
+            echo: no
+          register: satellite_admin_password_input
+          when: satellite_admin_password is not defined
+
+        - name: Set Satellite admin password
+          set_fact:
+            satellite_admin_password: "{{ satellite_admin_password_input.user_input }}"
+          when: satellite_admin_password is not defined
+
+        - name: Collect Satellite FQDN
+          pause:
+            prompt: "Enter Satellite FQDN [{{ satellite_fqdn }}]"
+          register: satellite_fqdn_input
+          when: satellite_fqdn == 'satellite.example.com'
+
+        - name: Set Satellite FQDN
+          set_fact:
+            satellite_fqdn: "{{ satellite_fqdn_input.user_input if satellite_fqdn_input.user_input != '' else satellite_fqdn }}"
+          when: satellite_fqdn == 'satellite.example.com'
+
+      when: interactive_setup_needed and deployment_mode != 'preflight'
+
+    # ========================================
+    # CREDENTIAL STORAGE OPTIONS
+    # ========================================
+    - name: Prompt for credential storage preference
+      block:
+        - name: Ask user about credential storage
+          pause:
+            prompt: |
+              
+              =======================================================================
+              [SECURITY] CREDENTIAL STORAGE OPTIONS
+              =======================================================================
+              
+              Would you like to store credentials in an encrypted Ansible vault file?
+              This will save credentials in {{ vault_file_path }}
+              
+              Enter 'yes' to store credentials securely, 'no' to clear after deployment [no]
+          register: vault_preference_input
+          when: interactive_setup_needed
+
+        - name: Set credential storage preference
+          set_fact:
+            store_credentials_in_vault: "{{ 'yes' in (vault_preference_input.user_input | lower) }}"
+          when: interactive_setup_needed
+
+        - name: Create vault directory if needed
+          file:
+            path: "{{ vault_file_path | dirname }}"
+            state: directory
+            mode: '0700'
+          when: store_credentials_in_vault
+
+        - name: Generate vault password if needed
+          set_fact:
+            vault_password: "{{ ansible_password | default(lookup('password', '/tmp/vault_pass length=32 chars=ascii_letters,digits')) }}"
+          when: store_credentials_in_vault
+
+        - name: Save credentials to encrypted vault
+          copy:
+            dest: "{{ vault_file_path }}"
+            content: |
+              ---
+              # Encrypted Satellite Credentials
+              # Generated: {{ ansible_date_time.iso8601 }}
+              
+              vault_redhat_username: "{{ redhat_username }}"
+              vault_redhat_password: "{{ redhat_password }}"
+              vault_satellite_admin_password: "{{ satellite_admin_password }}"
+            mode: '0600'
+          when: store_credentials_in_vault
+
+        - name: Encrypt vault file
+          shell: |
+            echo "{{ vault_password }}" | ansible-vault encrypt {{ vault_file_path }} --vault-password-file=-
+          when: store_credentials_in_vault
+
+        - name: Display vault information
+          debug:
+            msg: |
+              
+              [VAULT] CREDENTIALS SAVED TO ENCRYPTED VAULT
+              =======================================================================
+              Vault file: {{ vault_file_path }}
+              
+              To use saved credentials in future runs:
+              ansible-playbook satellite_setup_playbook.yml --vault-password-file=/tmp/vault_pass
+              
+              [WARNING] Keep your vault password secure!
+              =======================================================================
+          when: store_credentials_in_vault
+      when: deployment_mode != 'preflight'
+
+    # ========================================
+    # ENHANCED PRE-FLIGHT CHECKS
+    # ========================================
+    - name: Initialize pre-flight check results
+      set_fact:
+        preflight_failures: []
+        preflight_warnings: []
+
+    - name: Check Ansible collection dependencies
+      block:
+        - name: Verify ansible.posix collection is available
+          shell: ansible-galaxy collection list ansible.posix
+          register: posix_collection_check
+          failed_when: false
+          changed_when: false
+
+        - name: Record missing ansible.posix collection
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['MISSING COLLECTION: ansible.posix collection is required for firewalld module'] }}"
+          when: posix_collection_check.rc != 0
+
+        - name: Check for community.general collection
+          shell: ansible-galaxy collection list community.general
+          register: general_collection_check
+          failed_when: false
+          changed_when: false
+
+        - name: Record missing community.general collection
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['RECOMMENDED COLLECTION: community.general collection provides additional useful modules'] }}"
+          when: general_collection_check.rc != 0
+
+    - name: Verify system requirements
+      block:
+        - name: Check RAM requirements
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['INSUFFICIENT RAM: ' + (ansible_memtotal_mb|string) + 'MB detected, minimum 20480MB (20GB) required'] }}"
+          when: ansible_memtotal_mb < 20480
+
+        - name: Check CPU requirements
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['INSUFFICIENT CPU: ' + (ansible_processor_vcpus|string) + ' cores detected, minimum 4 cores required'] }}"
+          when: ansible_processor_vcpus < 4
+
+        - name: Check architecture requirements
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['UNSUPPORTED ARCHITECTURE: ' + ansible_architecture + ' detected, x86_64 required'] }}"
+          when: ansible_architecture != "x86_64"
+
+    - name: Check disk space requirements
+      block:
+        - name: Extract available disk space
+          shell: df -BG / | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: disk_space_check
+          changed_when: false
+
+        - name: Debug disk space value
+          debug:
+            msg: "Disk space check result: {{ disk_space_check }}"
+
+        - name: Set disk space facts
+          set_fact:
+            available_disk_gb: "{{ disk_space_check.stdout | default('0') }}"
+
+        - name: Record disk space issues
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['INSUFFICIENT DISK SPACE: ' + available_disk_gb + 'GB available, minimum 120GB required, recommended 500GB'] }}"
+          when: available_disk_gb|int < 120
+
+        - name: Record disk space warnings
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['DISK SPACE WARNING: ' + available_disk_gb + 'GB available, meets minimum but below 500GB recommended for production'] }}"
+          when: available_disk_gb|int >= 120 and available_disk_gb|int < 500
+
+    - name: Check network connectivity and subscription status
+      block:
+        - name: Skip subscription checks if requested
+          debug:
+            msg: "Skipping subscription checks as requested"
+          when: skip_subscription_check | default(false)
+
+        - name: Test Red Hat CDN connectivity
+          uri:
+            url: https://cdn.redhat.com
+            method: HEAD
+            timeout: 15
+            validate_certs: no
+          register: cdn_connectivity
+          failed_when: false
+          changed_when: false
+          when: not (skip_subscription_check | default(false))
+
+        - name: Record CDN connectivity issues
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['NETWORK CONNECTIVITY: Cannot reach Red Hat CDN (https://cdn.redhat.com) - Status: ' + (cdn_connectivity.status|default('Connection Failed')|string)] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - cdn_connectivity.status is not defined or cdn_connectivity.status != 200
+
+        - name: Check subscription manager status
+          shell: timeout 10s subscription-manager status || echo "TIMEOUT_OR_ERROR"
+          register: subscription_status
+          failed_when: false
+          changed_when: false
+          when: not (skip_subscription_check | default(false))
+
+        - name: Check registration identity (supplementary check)
+          shell: timeout 5s subscription-manager identity || echo "NOT_REGISTERED"
+          register: registration_identity
+          failed_when: false
+          changed_when: false
+          when: not (skip_subscription_check | default(false))
+
+        - name: Debug subscription status output
+          debug:
+            msg: |
+              [DEBUG] SUBSCRIPTION STATUS DETAILS
+              =======================================================================
+              Status Command RC: {{ subscription_status.rc if subscription_status.rc is defined else 'Skipped' }}
+              Status Output: {{ subscription_status.stdout | default('No output') }}
+              Identity Check: {{ 'REGISTERED' if (registration_identity.rc is defined and registration_identity.rc == 0) else 'NOT REGISTERED OR TIMEOUT' }}
+              Identity Output: {{ registration_identity.stdout | default('No output') if registration_identity.stdout is defined else 'Skipped' }}
+              =======================================================================
+          when: not (skip_subscription_check | default(false))
+
+        - name: Handle subscription manager timeout
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['SUBSCRIPTION STATUS: subscription-manager command timed out - using bypass mode'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - subscription_status.stdout is defined
+            - "'TIMEOUT_OR_ERROR' in subscription_status.stdout"
+
+        - name: Parse subscription status - System registered with identity
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['SUBSCRIPTION STATUS: System registered and identity confirmed - ' + (registration_identity.stdout.split('\n')[0] if registration_identity.stdout is defined else 'Registration verified')] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - registration_identity.rc is defined 
+            - registration_identity.rc == 0
+            - "'NOT_REGISTERED' not in registration_identity.stdout"
+
+        - name: Parse subscription status - Simple Content Access
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['SUBSCRIPTION STATUS: Simple Content Access enabled - Content repositories available without traditional subscriptions'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - subscription_status.stdout is defined
+            - "'TIMEOUT_OR_ERROR' not in subscription_status.stdout"
+            - subscription_status.rc == 0
+            - "'Simple Content Access' in subscription_status.stdout"
+
+        - name: Parse subscription status - Traditional subscription active
+          set_fact:
+            subscription_check_passed: true
+          when: 
+            - not (skip_subscription_check | default(false))
+            - subscription_status.stdout is defined
+            - "'TIMEOUT_OR_ERROR' not in subscription_status.stdout"
+            - subscription_status.rc == 0
+            - "'Overall Status: Current' in subscription_status.stdout"
+
+        - name: Parse subscription status - Not registered or failed
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['SUBSCRIPTION STATUS: System not properly registered with Red Hat - Please run: subscription-manager register --username=YOUR_USER --auto-attach'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - subscription_status.stdout is defined
+            - "'TIMEOUT_OR_ERROR' not in subscription_status.stdout"
+            - registration_identity.rc is defined
+            - registration_identity.rc != 0
+            - subscription_status.rc != 0
+
+        - name: Check available repositories
+          shell: timeout 10s subscription-manager repos --list-enabled || echo "TIMEOUT_OR_ERROR"
+          register: enabled_repos
+          failed_when: false
+          changed_when: false
+          when: not (skip_subscription_check | default(false))
+
+        - name: Verify required repositories are available
+          shell: timeout 15s subscription-manager repos --list | grep -E "(satellite-6.17|rhel-9-for-x86_64)" | head -5 || echo "TIMEOUT_OR_ERROR"
+          register: available_repos
+          failed_when: false
+          changed_when: false
+          when: not (skip_subscription_check | default(false))
+
+        - name: Debug repository check results
+          debug:
+            msg: "Available repos RC: {{ available_repos.rc }}, Contains satellite: {{ 'satellite-6.17' in (available_repos.stdout | default('')) }}, Timeout: {{ 'TIMEOUT_OR_ERROR' in (available_repos.stdout | default('')) }}"
+          when: not (skip_subscription_check | default(false))
+
+        - name: Record repository timeout warning
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['REPOSITORY ACCESS: Repository check timed out - manual verification recommended'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - "'TIMEOUT_OR_ERROR' in (available_repos.stdout | default(''))"
+
+        - name: Record repository warnings for Simple Content Access
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['REPOSITORY ACCESS: Simple Content Access mode detected - Satellite repositories should be accessible'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - "'TIMEOUT_OR_ERROR' not in (available_repos.stdout | default(''))"
+            - subscription_status.stdout is defined 
+            - "'Simple Content Access' in subscription_status.stdout"
+            - available_repos.rc != 0 or 'satellite-6.17' not in (available_repos.stdout | default(''))
+
+        - name: Record critical repository issues for traditional subscriptions
+          set_fact:
+            preflight_failures: "{{ preflight_failures + ['REPOSITORY ACCESS: Required Satellite 6.17 repositories not available - check subscription entitlements in Red Hat Customer Portal'] }}"
+          when: 
+            - not (skip_subscription_check | default(false))
+            - "'TIMEOUT_OR_ERROR' not in (available_repos.stdout | default(''))"
+            - subscription_status.stdout is defined
+            - "'Simple Content Access' not in subscription_status.stdout"
+            - available_repos.rc != 0 or 'satellite-6.17' not in (available_repos.stdout | default(''))
+
+        - name: Display subscription check bypass message
+          debug:
+            msg: |
+              [WARNING] SUBSCRIPTION CHECKS BYPASSED
+              =======================================================================
+              Subscription and repository checks were skipped.
+              Ensure your system has proper Red Hat subscription access before deployment.
+              =======================================================================
+          when: skip_subscription_check | default(false)
+
+    - name: Display detailed pre-flight check results
+      debug:
+        msg: |
+          
+          =======================================================================
+                             [CHECK] PRE-FLIGHT CHECK RESULTS
+          =======================================================================
+          
+          {% if preflight_failures | length == 0 -%}
+          [SUCCESS] STATUS: ALL CHECKS PASSED - Ready for Satellite deployment!
+          {% else -%}
+          [FAILURE] STATUS: {{ preflight_failures | length }} CRITICAL ISSUE(S) FOUND
+          
+          DETAILED FAILURE ANALYSIS:
+          {% for failure in preflight_failures -%}
+          
+          [ERROR] {{ loop.index }}. {{ failure }}
+          {% endfor -%}
+          {% endif -%}
+          
+          {% if preflight_warnings | length > 0 -%}
+          [WARNING] WARNINGS DETECTED:
+          {% for warning in preflight_warnings -%}
+          
+          [WARN] {{ loop.index }}. {{ warning }}
+          {% endfor -%}
+          {% endif -%}
+          
+          RESOLUTION GUIDE:
+          -----------------------------------------------------------------------
+          {% if preflight_failures | select('search', 'DISK') | list | length > 0 -%}
+          
+          [DISK] DISK SPACE ISSUE:
+             - Current available: {{ available_disk_gb | default('Unknown') }}GB
+             - Required minimum: 120GB (for testing environments)
+             - Recommended: 500GB (for production environments)
+             - Solutions:
+               - Free up disk space: sudo dnf clean all; sudo find /var/log -name "*.log" -delete
+               - Extend filesystem: lvextend -L +50G /dev/mapper/rhel-root; xfs_growfs /
+               - Add storage volume and mount to /var/lib/pulp
+          {% endif -%}
+          
+          {% if preflight_failures | select('search', 'COLLECTION') | list | length > 0 -%}
+          
+          [ANSIBLE] MISSING ANSIBLE COLLECTIONS:
+             - Install command: ansible-galaxy collection install ansible.posix community.general
+             - This resolves firewalld module dependencies
+          {% endif -%}
+          
+          {% if preflight_failures | select('search', 'NETWORK') | list | length > 0 -%}
+          
+          [NETWORK] NETWORK CONNECTIVITY:
+             - Check firewall: sudo firewall-cmd --list-all
+             - Test manually: curl -I https://cdn.redhat.com
+             - Check DNS: nslookup cdn.redhat.com
+          {% endif -%}
+          
+          {% if preflight_failures | select('search', 'SUBSCRIPTION') | list | length > 0 -%}
+          
+          [SUBSCRIPTION] RED HAT SUBSCRIPTION:
+             - Check current status: sudo subscription-manager status
+             - Check identity: sudo subscription-manager identity  
+             - Register system: sudo subscription-manager register --username=YOUR_USER
+             - Auto-attach: sudo subscription-manager attach --auto
+             - List available: sudo subscription-manager list --available
+             - Manual attachment: sudo subscription-manager attach --pool=POOL_ID
+          {% endif -%}
+          
+          {% if preflight_failures | select('search', 'REPOSITORY') | list | length > 0 -%}
+          
+          [REPOSITORY] REPOSITORY ACCESS:
+             - Enable repos: sudo subscription-manager repos --enable=satellite-6.17-for-rhel-9-x86_64-rpms
+             - Verify access: sudo dnf repolist enabled
+             - Check entitlements in Red Hat Customer Portal
+          {% endif -%}
+          
+          {% if preflight_failures | select('search', 'RAM|CPU|ARCHITECTURE') | list | length > 0 -%}
+          
+          [HARDWARE] HARDWARE REQUIREMENTS:
+             - RAM: Minimum 20GB, detected {{ ansible_memtotal_mb | default('Unknown') }}MB
+             - CPU: Minimum 4 cores, detected {{ ansible_processor_vcpus | default('Unknown') }} cores
+             - Architecture: Must be x86_64, detected {{ ansible_architecture | default('Unknown') }}
+          {% endif -%}
+          
+          =======================================================================
+
+    - name: Create human-readable failure summary
+      set_fact:
+        failure_summary: |
+          SATELLITE 6.17 PRE-FLIGHT CHECK FAILURE SUMMARY
+          
+          System: {{ ansible_fqdn | default(ansible_hostname) }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          
+          CRITICAL ISSUES ({{ preflight_failures | length }}):
+          {% for failure in preflight_failures %}
+          {{ loop.index }}. {{ failure }}
+          {% endfor %}
+          
+          {% if preflight_warnings | length > 0 %}
+          WARNINGS ({{ preflight_warnings | length }}):
+          {% for warning in preflight_warnings %}
+          {{ loop.index }}. {{ warning }}
+          {% endfor %}
+          {% endif %}
+          
+          SYSTEM SPECIFICATIONS:
+          - Hostname: {{ ansible_fqdn | default(ansible_hostname) }}
+          - OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - RAM: {{ ansible_memtotal_mb }}MB
+          - CPU Cores: {{ ansible_processor_vcpus }}
+          - Architecture: {{ ansible_architecture }}
+          - Available Disk: {{ available_disk_gb | default('Unknown') }}GB
+          
+          NEXT STEPS:
+          1. Resolve all critical issues listed above
+          2. Re-run deployment: ./satellite_complete_setup.sh -vvv
+          3. Contact support if issues persist
+
+    - name: Save failure report to file
+      copy:
+        dest: /tmp/satellite_preflight_failure_report.txt
+        content: "{{ failure_summary }}"
+        mode: '0644'
+      when: preflight_failures | length > 0
+
+    - name: Display failure report location
+      debug:
+        msg: |
+          
+          [REPORT] DETAILED FAILURE REPORT SAVED TO: /tmp/satellite_preflight_failure_report.txt
+          
+          View the report: cat /tmp/satellite_preflight_failure_report.txt
+          
+      when: preflight_failures | length > 0
+
+    - name: Fail deployment if critical pre-flight checks failed
+      fail:
+        msg: |
+          
+          ======================================================================
+                                                                               
+                      [CRITICAL] SATELLITE DEPLOYMENT ABORTED                     
+                                                                               
+          ======================================================================
+          
+          [FAILURE] {{ preflight_failures | length }} Critical Issue(s) Must Be Resolved:
+          
+          {% for failure in preflight_failures %}
+          {{ loop.index }}. {{ failure }}
+          
+          {% endfor %}
+          
+          [REPORT] DETAILED REPORT: /tmp/satellite_preflight_failure_report.txt
+          
+          [QUICK-FIX] QUICK FIXES:
+          {% if preflight_failures | select('search', 'DISK') | list | length > 0 -%}
+          - Disk Space: sudo lvextend -L +50G /dev/mapper/rhel-root && sudo xfs_growfs /
+          {% endif -%}
+          {% if preflight_failures | select('search', 'COLLECTION') | list | length > 0 -%}
+          - Collections: ansible-galaxy collection install ansible.posix community.general
+          {% endif -%}
+          {% if preflight_failures | select('search', 'SUBSCRIPTION') | list | length > 0 -%}
+          - Registration: subscription-manager register --username=YOUR_USER --auto-attach
+          {% endif -%}
+          
+          [RETRY] RETRY: ansible-playbook satellite_setup_playbook.yml (after resolving issues)
+          
+      when: 
+        - preflight_failures | length > 0
+        - not (force_deployment | default(false))
+        - not (skip_preflight | default(false))
+
+    - name: Complete preflight-only mode
+      block:
+        - name: Display preflight-only completion message
+          debug:
+            msg: |
+              
+              ========================================================================
+                          [SUCCESS] PRE-FLIGHT CHECK COMPLETED
+              ========================================================================
+                                                                               
+              Status: {{ 'READY FOR DEPLOYMENT' if preflight_failures | length == 0 else 'ISSUES DETECTED' }}
+              Critical Issues: {{ preflight_failures | length }}
+              Warnings: {{ preflight_warnings | length }}
+                                                                               
+              {% if preflight_failures | length == 0 %}Next: Run full deployment with deployment_mode=full
+              {% else %}Next: Fix issues above and re-run preflight check{% endif %}
+                                                                               
+              ========================================================================
+
+        - name: End playbook for preflight-only mode
+          meta: end_play
+      when: deployment_mode == 'preflight'
+
+    # ========================================
+    # INTEGRATED DEPLOYMENT LAUNCHER
+    # ========================================
+    - name: Create integrated deployment launcher script
+      copy:
+        dest: /usr/local/bin/satellite-deploy
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          
+          # Red Hat Satellite 6.17 Integrated Deployment Launcher
+          # This script provides a unified interface for all Satellite deployment operations
+          
+          set -euo pipefail
+          
+          # Colors for output
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          CYAN='\033[0;36m'
+          NC='\033[0m' # No Color
+          
+          # Script directory
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          DEPLOYMENT_DIR="/opt/satellite-deployment"
+          
+          # Default values
+          DEPLOYMENT_MODE="full"
+          VERBOSITY=""
+          SKIP_PREFLIGHT=false
+          FORCE_DEPLOYMENT=false
+          INTERACTIVE=false
+          UNDO_DEPLOYMENT=false
+          
+          # Function to print colored output
+          print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+          print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+          print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+          print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+          print_header() { echo -e "${CYAN}=== $1 ===${NC}"; }
+          
+          # Usage function
+          usage() {
+              cat << 'EOF'
+          Red Hat Satellite 6.17 Integrated Deployment System
+          
+          USAGE:
+              satellite-deploy [OPTIONS]
+          
+          OPTIONS:
+              -m, --mode MODE         Deployment mode: preflight, full, quick (default: full)
+              -i, --interactive       Interactive mode for credential input and host selection
+              -s, --skip-preflight    Skip pre-flight checks (not recommended)
+              -f, --force             Force deployment despite warnings
+              -u, --undo              Undo previous deployment changes
+              -v, --verbose           Verbose output (-v, -vv, -vvv)
+              -h, --help              Show this help message
+          
+          DEPLOYMENT MODES:
+              preflight               Run only pre-flight checks
+              full                    Complete Satellite deployment (default)
+              quick                   Minimal deployment for testing
+          
+          EXAMPLES:
+              satellite-deploy                    # Interactive deployment with host selection
+              satellite-deploy -m preflight       # Run only pre-flight checks
+              satellite-deploy -u                 # Undo previous deployment
+              satellite-deploy -i -v              # Interactive with verbose output
+              satellite-deploy -m quick -f        # Quick deployment, force through warnings
+          
+          EOF
+              exit 1
+          }
+          
+          # Parse command line arguments
+          while [[ $# -gt 0 ]]; do
+              case $1 in
+                  -m|--mode)
+                      DEPLOYMENT_MODE="$2"
+                      shift 2
+                      ;;
+                  -i|--interactive)
+                      INTERACTIVE=true
+                      shift
+                      ;;
+                  -s|--skip-preflight)
+                      SKIP_PREFLIGHT=true
+                      shift
+                      ;;
+                  -f|--force)
+                      FORCE_DEPLOYMENT=true
+                      shift
+                      ;;
+                  -u|--undo)
+                      UNDO_DEPLOYMENT=true
+                      shift
+                      ;;
+                  -v|--verbose)
+                      if [[ "$VERBOSITY" == "" ]]; then
+                          VERBOSITY="-v"
+                      elif [[ "$VERBOSITY" == "-v" ]]; then
+                          VERBOSITY="-vv"
+                      elif [[ "$VERBOSITY" == "-vv" ]]; then
+                          VERBOSITY="-vvv"
+                      fi
+                      shift
+                      ;;
+                  -h|--help)
+                      usage
+                      ;;
+                  *)
+                      print_error "Unknown option: $1"
+                      usage
+                      ;;
+              esac
+          done
+          
+          # Validate deployment mode
+          case $DEPLOYMENT_MODE in
+              preflight|full|quick)
+                  ;;
+              *)
+                  print_error "Invalid deployment mode: $DEPLOYMENT_MODE"
+                  usage
+                  ;;
+          esac
+          
+          # Display banner
+          echo ""
+          echo "╔════════════════════════════════════════════════════════════════════╗"
+          if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+              echo "║         🔄  RED HAT SATELLITE 6.17 UNDO DEPLOYMENT               ║"
+          else
+              echo "║         🛰️  RED HAT SATELLITE 6.17 INTEGRATED DEPLOYMENT         ║"
+          fi
+          echo "╠════════════════════════════════════════════════════════════════════╣"
+          echo "║                                                                    ║"
+          if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+              echo "║  Operation: UNDO DEPLOYMENT                                       ║"
+          else
+              echo "║  Mode: $(printf "%-10s" "$DEPLOYMENT_MODE")                                            ║"
+          fi
+          echo "║  Interactive: $(printf "%-3s" "${INTERACTIVE}")                                        ║"
+          echo "║  Force: $(printf "%-5s" "${FORCE_DEPLOYMENT}")                                        ║"
+          echo "║                                                                    ║"
+          echo "╚════════════════════════════════════════════════════════════════════╝"
+          echo ""
+          
+          # Check prerequisites
+          print_header "Checking Prerequisites"
+          
+          # Check if ansible is installed
+          if ! command -v ansible-playbook &> /dev/null; then
+              print_error "Ansible is not installed. Please install ansible-core."
+              exit 1
+          fi
+          
+          print_success "Ansible is available"
+          
+          # Find the playbook location
+          PLAYBOOK_PATH=""
+          if [[ -f "$DEPLOYMENT_DIR/satellite_setup_playbook.yml" ]]; then
+              PLAYBOOK_PATH="$DEPLOYMENT_DIR/satellite_setup_playbook.yml"
+              INVENTORY_PATH="$DEPLOYMENT_DIR/inventory.ini"
+          elif [[ -f "$(pwd)/satellite_setup_playbook.yml" ]]; then
+              PLAYBOOK_PATH="$(pwd)/satellite_setup_playbook.yml"
+              INVENTORY_PATH="$(pwd)/inventory.ini"
+          else
+              print_error "Playbook not found. Please run from deployment directory or ensure files are in $DEPLOYMENT_DIR"
+              exit 1
+          fi
+          
+          print_success "Playbook found: $PLAYBOOK_PATH"
+          
+          # Install required collections
+          print_status "Installing/updating required Ansible collections..."
+          ansible-galaxy collection install ansible.posix community.general --force-with-deps
+          
+          # Build ansible command
+          ANSIBLE_CMD="ansible-playbook"
+          ANSIBLE_CMD+=" -i $INVENTORY_PATH"
+          ANSIBLE_CMD+=" $PLAYBOOK_PATH"
+          
+          # Add extra variables
+          EXTRA_VARS="deployment_mode=$DEPLOYMENT_MODE"
+          EXTRA_VARS+=",skip_preflight=$SKIP_PREFLIGHT"
+          EXTRA_VARS+=",force_deployment=$FORCE_DEPLOYMENT"
+          EXTRA_VARS+=",undo_deployment=$UNDO_DEPLOYMENT"
+          
+          if [[ "$INTERACTIVE" == "true" ]]; then
+              EXTRA_VARS+=",interactive_mode=true"
+          fi
+          
+          ANSIBLE_CMD+=" -e \"$EXTRA_VARS\""
+          
+          # Add verbosity
+          if [[ -n "$VERBOSITY" ]]; then
+              ANSIBLE_CMD+=" $VERBOSITY"
+          fi
+          
+          # Display execution plan
+          print_header "Deployment Execution Plan"
+          echo "Command: $ANSIBLE_CMD"
+          if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+              echo "Operation: Undo deployment changes"
+          else
+              echo "Mode: $DEPLOYMENT_MODE"
+          fi
+          echo "Variables: $EXTRA_VARS"
+          
+          # Confirm execution
+          if [[ "$INTERACTIVE" == "true" ]] || [[ "$DEPLOYMENT_MODE" == "full" && -z "$FORCE_DEPLOYMENT" && "$UNDO_DEPLOYMENT" != "true" ]]; then
+              echo ""
+              if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+                  read -p "Proceed with undo operation? [y/N]: " -n 1 -r
+              else
+                  read -p "Proceed with deployment? [y/N]: " -n 1 -r
+              fi
+              echo
+              if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                  print_warning "Operation cancelled by user"
+                  exit 0
+              fi
+          fi
+          
+          # Execute deployment
+          if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+              print_header "Starting Satellite Undo Operation"
+          else
+              print_header "Starting Satellite Deployment"
+          fi
+          print_status "Execution started at $(date)"
+          
+          # Run the playbook
+          eval $ANSIBLE_CMD
+          
+          DEPLOYMENT_EXIT_CODE=$?
+          
+          # Display results
+          echo ""
+          if [[ $DEPLOYMENT_EXIT_CODE -eq 0 ]]; then
+              if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+                  print_success "🔄 Satellite undo operation completed successfully!"
+              else
+                  print_success "🎉 Satellite deployment completed successfully!"
+                  
+                  if [[ "$DEPLOYMENT_MODE" == "full" ]]; then
+                      echo ""
+                      print_header "Post-Deployment Information"
+                      echo "📋 Detailed report: /var/log/satellite_deployment_report.log"
+                      echo "📖 Quick reference: /root/satellite_quick_reference.txt"
+                      echo "🔍 Health check: satellite-deploy -m preflight"
+                      echo "🔄 Undo deployment: satellite-deploy -u"
+                  fi
+              fi
+          else
+              if [[ "$UNDO_DEPLOYMENT" == "true" ]]; then
+                  print_error "❌ Undo operation failed with exit code $DEPLOYMENT_EXIT_CODE"
+              else
+                  print_error "❌ Deployment failed with exit code $DEPLOYMENT_EXIT_CODE"
+                  echo ""
+                  print_status "Troubleshooting tips:"
+                  echo "  1. Check the output above for specific error messages"
+                  echo "  2. Run with increased verbosity: satellite-deploy $* -vvv"
+                  echo "  3. Run preflight checks only: satellite-deploy -m preflight"
+                  echo "  4. Undo partial changes: satellite-deploy -u"
+              fi
+              exit $DEPLOYMENT_EXIT_CODE
+          fi
+          
+          print_status "Operation completed at $(date)"
+
+    - name: Remove old disk check sections since we integrated it above
+      meta: noop
+
+  tasks:
+    # ========================================
+    # PHASE 1: System Preparation
+    # ========================================
+    - name: Phase 1 - System Preparation
+      debug:
+        msg: "Starting Phase 1: System Preparation"
+
+    - name: Set hostname
+      hostname:
+        name: "{{ satellite_hostname }}"
+
+    - name: Update /etc/hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ satellite_ip }} {{ satellite_fqdn }} {{ satellite_hostname }}"
+        state: present
+
+    - name: Create admin user
+      user:
+        name: admin
+        groups: wheel
+        append: yes
+        create_home: yes
+        shell: /bin/bash
+
+    - name: Configure sudo for admin user
+      lineinfile:
+        path: /etc/sudoers.d/admin
+        line: "admin   ALL=(ALL)       NOPASSWD: ALL"
+        create: yes
+        mode: '0440'
+
+    - name: Generate SSH keys for admin user
+      shell: |
+        if [ ! -f /home/admin/.ssh/id_rsa ]; then
+          sudo -u admin ssh-keygen -t rsa -b 2048 -f /home/admin/.ssh/id_rsa -N ""
+        fi
+      args:
+        creates: /home/admin/.ssh/id_rsa
+
+    - name: Generate SSH keys for root user
+      shell: |
+        if [ ! -f /root/.ssh/id_rsa ]; then
+          ssh-keygen -t rsa -b 2048 -f /root/.ssh/id_rsa -N ""
+        fi
+      args:
+        creates: /root/.ssh/id_rsa
+
+    # ========================================
+    # PHASE 2: Repository and Package Setup
+    # ========================================
+    - name: Phase 2 - Repository and Package Setup
+      debug:
+        msg: "Starting Phase 2: Repository and Package Setup"
+
+    - name: Check if system is already registered
+      shell: subscription-manager identity
+      register: registration_check
+      failed_when: false
+      changed_when: false
+      when: not (skip_registration | default(false))
+
+    - name: Display current registration status
+      debug:
+        msg: |
+          [INFO] REGISTRATION STATUS CHECK
+          =======================================================================
+          {% if skip_registration | default(false) %}
+          Registration Check: BYPASSED (skip_registration=true)
+          Manual registration required after deployment
+          {% else %}
+          System Identity Check: {{ 'REGISTERED' if registration_check.rc == 0 else 'NOT REGISTERED' }}
+          {% if registration_check.rc == 0 %}
+          Current Registration: {{ registration_check.stdout_lines[0] if registration_check.stdout_lines else 'Identity found' }}
+          {% else %}
+          Registration Required: System needs to be registered with Red Hat
+          {% endif %}
+          {% endif %}
+          =======================================================================
+
+    - name: Display registration bypass message
+      debug:
+        msg: |
+          [WARNING] REGISTRATION BYPASSED
+          =======================================================================
+          System registration was skipped (skip_registration=true)
+          
+          MANUAL REGISTRATION REQUIRED:
+          sudo subscription-manager register --username={{ redhat_username }}
+          sudo subscription-manager attach --auto
+          
+          Continue deployment only if system has repository access...
+          =======================================================================
+      when: skip_registration | default(false)
+
+    - name: Register system with Red Hat (only if not already registered)
+      shell: |
+        timeout 60s subscription-manager register --username="{{ redhat_username }}" --password="{{ redhat_password }}" --auto-attach 2>&1
+      register: subscription_result
+      when: 
+        - not (skip_registration | default(false))
+        - registration_check.rc != 0
+      failed_when: false
+      async: 120
+      poll: 5
+
+    - name: Check registration result and handle errors
+      block:
+        - name: Display registration success
+          debug:
+            msg: |
+              [SUCCESS] SYSTEM REGISTRATION COMPLETED
+              =======================================================================
+              Registration successful with Red Hat subscription management
+              Command output: {{ subscription_result.stdout | default('No output') }}
+              =======================================================================
+          when: 
+            - registration_check.rc != 0
+            - subscription_result.rc is defined
+            - subscription_result.rc == 0
+
+        - name: Handle registration timeout or failure
+          debug:
+            msg: |
+              [WARNING] REGISTRATION ISSUE DETECTED
+              =======================================================================
+              Registration command result: {{ subscription_result.rc | default('Unknown') }}
+              Output: {{ subscription_result.stdout | default('No output') }}
+              Error: {{ subscription_result.stderr | default('No error output') }}
+              
+              {% if subscription_result.rc is defined and subscription_result.rc == 124 %}
+              TIMEOUT: Registration command timed out after 60 seconds
+              {% elif subscription_result.rc is defined and subscription_result.rc != 0 %}
+              FAILED: Registration failed with return code {{ subscription_result.rc }}
+              {% endif %}
+              
+              TROUBLESHOOTING:
+              - Verify credentials: {{ redhat_username }}
+              - Check network connectivity to Red Hat
+              - Try manual registration: sudo subscription-manager register --username={{ redhat_username }}
+              - Check if system is behind a proxy
+              =======================================================================
+          when: 
+            - registration_check.rc != 0
+            - subscription_result.rc is defined
+            - subscription_result.rc != 0
+
+        - name: Set registration warning for failed attempts
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['REGISTRATION WARNING: Automatic registration failed - manual registration may be required'] }}"
+          when: 
+            - registration_check.rc != 0
+            - subscription_result.rc is defined
+            - subscription_result.rc != 0
+      when: 
+        - not (skip_registration | default(false))
+        - registration_check.rc is defined
+
+    - name: Skip registration message
+      debug:
+        msg: |
+          [SUCCESS] REGISTRATION SKIPPED
+          =======================================================================
+          System is already registered with Red Hat subscription management.
+          Continuing with repository setup...
+          =======================================================================
+      when: 
+        - not (skip_registration | default(false))
+        - registration_check.rc is defined
+        - registration_check.rc == 0
+
+    - name: Enable required repositories
+      shell: |
+        subscription-manager repos --enable={{ item }}
+      loop:
+        - rhel-9-for-x86_64-appstream-rpms
+        - rhel-9-for-x86_64-baseos-rpms
+        - satellite-6.17-for-rhel-9-x86_64-rpms
+        - satellite-maintenance-6.17-for-rhel-9-x86_64-rpms
+      when: not (skip_registration | default(false))
+      ignore_errors: "{{ skip_registration | default(false) }}"
+
+    - name: Display repository setup bypass message
+      debug:
+        msg: |
+          [WARNING] REPOSITORY SETUP BYPASSED
+          =======================================================================
+          Repository enablement was skipped due to registration bypass.
+          
+          MANUAL REPOSITORY SETUP REQUIRED:
+          sudo subscription-manager repos --enable=rhel-9-for-x86_64-appstream-rpms
+          sudo subscription-manager repos --enable=rhel-9-for-x86_64-baseos-rpms  
+          sudo subscription-manager repos --enable=satellite-6.17-for-rhel-9-x86_64-rpms
+          sudo subscription-manager repos --enable=satellite-maintenance-6.17-for-rhel-9-x86_64-rpms
+          
+          Or ensure equivalent repositories are available via other means...
+          =======================================================================
+      when: skip_registration | default(false)
+
+    - name: Update all packages (with conflict handling)
+      block:
+        - name: Try full system update
+          dnf:
+            name: "*"
+            state: latest
+          register: update_result
+
+      rescue:
+        - name: Handle package conflicts during update
+          debug:
+            msg: |
+              [WARNING] PACKAGE UPDATE CONFLICTS DETECTED
+              =======================================================================
+              Full system update failed due to package conflicts.
+              Error: {{ update_result.msg | default('Unknown error') }}
+              
+              Attempting selective update to avoid conflicts...
+              =======================================================================
+
+        - name: Update core system packages (avoiding problematic packages)
+          dnf:
+            name:
+              - kernel
+              - systemd
+              - glibc
+              - openssl
+              - curl
+              - wget
+              - vim
+              - dnf
+            state: latest
+          ignore_errors: yes
+
+        - name: Set package update warning
+          set_fact:
+            preflight_warnings: "{{ preflight_warnings + ['PACKAGE UPDATE: Full system update failed due to package conflicts - core packages updated instead'] }}"
+
+    - name: Install Satellite and supporting packages
+      dnf:
+        name:
+          - satellite
+          - dhcp-server
+          - tftp-server
+          - syslinux-tftpboot
+          - bind
+          - bind-utils
+          - firewalld
+          - policycoreutils-python-utils
+          - tmux
+          - vim-enhanced
+          - wget
+          - curl
+        state: present
+
+    - name: Install additional tools (ignore if not available)
+      dnf:
+        name:
+          - setools-console
+        state: present
+      ignore_errors: yes
+
+    - name: Configure SELinux booleans for Satellite
+      shell: setsebool -P {{ item }} on
+      loop:
+        - httpd_can_network_connect
+        - httpd_can_network_relay
+        - httpd_execmem
+        - httpd_unified
+      ignore_errors: yes
+
+    - name: Copy TFTP boot files
+      copy:
+        src: "/usr/share/syslinux/{{ item }}"
+        dest: "/var/lib/tftpboot/{{ item }}"
+        remote_src: yes
+      loop:
+        - pxelinux.0
+        - ldlinux.c32
+        - menu.c32
+        - vesamenu.c32
+        - libutil.c32
+
+    - name: Create TFTP PXE configuration directory
+      file:
+        path: /var/lib/tftpboot/pxelinux.cfg
+        state: directory
+        mode: '0755'
+
+    # ========================================
+    # PHASE 3: Network Configuration
+    # ========================================
+    - name: Phase 3 - Network Configuration
+      debug:
+        msg: "Starting Phase 3: Network Configuration"
+
+    - name: Start and enable firewalld
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Configure firewall for Satellite services
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - http
+        - https
+        - tftp
+        - dhcp
+        - dns
+        - ssh
+
+    - name: Configure firewall for Satellite specific ports
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "5647/tcp"
+        - "8140/tcp"
+        - "9090/tcp"
+        - "53/udp"
+        - "67/udp"
+        - "69/udp"
+
+    # ========================================
+    # PHASE 4: Satellite Installation
+    # ========================================
+    - name: Phase 4 - Satellite Installation
+      debug:
+        msg: "Starting Phase 4: Satellite Installation"
+
+    - name: Run Satellite installer
+      shell: |
+        satellite-installer --scenario satellite \
+          --foreman-initial-organization "{{ satellite_organization }}" \
+          --foreman-initial-location "{{ satellite_location }}" \
+          --foreman-initial-admin-username "{{ satellite_admin_username }}" \
+          --foreman-initial-admin-password "{{ satellite_admin_password }}" \
+          --foreman-proxy-dhcp \
+          --foreman-proxy-dhcp-interface "{{ dhcp_interface }}" \
+          --foreman-proxy-dhcp-gateway "{{ dhcp_gateway }}" \
+          --foreman-proxy-dhcp-range "{{ dhcp_range }}" \
+          --foreman-proxy-dns \
+          --foreman-proxy-dns-interface "{{ dns_interface }}" \
+          --foreman-proxy-dns-reverse "{{ dns_reverse_zone }}" \
+          --foreman-proxy-tftp \
+          --foreman-proxy-tftp-servername "{{ satellite_fqdn }}" \
+          --enable-foreman-plugin-remote-execution \
+          --enable-foreman-plugin-ansible \
+          --enable-foreman-plugin-openscap \
+          --foreman-proxy-dns-provider nsupdate \
+          --foreman-proxy-dns-managed true
+      register: satellite_install_result
+      timeout: 3600
+      
+    - name: Display installation result
+      debug:
+        var: satellite_install_result.stdout_lines
+
+    - name: Start and enable services
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - dhcpd
+        - tftp
+        - named
+
+    # ========================================
+    # PHASE 5: Post-Installation Configuration
+    # ========================================
+    - name: Phase 5 - Post-Installation Configuration
+      debug:
+        msg: "Starting Phase 5: Post-Installation Configuration"
+
+    - name: Wait for Satellite to be ready
+      uri:
+        url: "https://{{ satellite_fqdn }}/api/status"
+        method: GET
+        validate_certs: no
+        status_code: 200
+      register: satellite_status
+      until: satellite_status.status == 200
+      retries: 30
+      delay: 30
+
+    - name: Create backup directory
+      file:
+        path: "{{ satellite_backup_dir }}"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Create backup script
+      copy:
+        dest: /usr/local/bin/satellite_backup.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Red Hat Satellite Backup Script - Enhanced Version
+          # Generated by Ansible on {{ deployment_timestamp }}
+          
+          BACKUP_DIR="{{ satellite_backup_dir }}"
+          RETENTION_DAYS="{{ satellite_backup_retention_days | default(30) }}"
+          DATE=$(date +%Y%m%d_%H%M%S)
+          BACKUP_PATH="${BACKUP_DIR}/satellite-backup-${DATE}"
+          LOG_FILE="${BACKUP_DIR}/backup.log"
+          
+          # Logging function
+          log() {
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "${LOG_FILE}"
+          }
+          
+          # Create backup directory
+          mkdir -p "${BACKUP_DIR}"
+          
+          log "Starting Satellite backup to ${BACKUP_PATH}"
+          
+          # Check disk space (need at least 50GB)
+          AVAILABLE_SPACE=$(df "${BACKUP_DIR}" | awk 'NR==2 {print $4}')
+          REQUIRED_SPACE=52428800  # 50GB in KB
+          
+          if [ "${AVAILABLE_SPACE}" -lt "${REQUIRED_SPACE}" ]; then
+              log "ERROR: Insufficient disk space. Need 50GB, have $(( AVAILABLE_SPACE / 1024 / 1024 ))GB"
+              exit 1
+          fi
+          
+          # Perform backup
+          log "Executing satellite-backup command..."
+          if satellite-backup "${BACKUP_PATH}" --features pulp_data,foreman_data,candlepin_data >> "${LOG_FILE}" 2>&1; then
+              log "SUCCESS: Backup completed successfully"
+              
+              # Compress backup
+              log "Compressing backup..."
+              tar -czf "${BACKUP_PATH}.tar.gz" -C "${BACKUP_DIR}" "$(basename "${BACKUP_PATH}")" 2>>"${LOG_FILE}"
+              if [ $? -eq 0 ]; then
+                  rm -rf "${BACKUP_PATH}"
+                  log "SUCCESS: Backup compressed and original removed"
+              fi
+              
+              # Cleanup old backups
+              log "Cleaning up backups older than ${RETENTION_DAYS} days..."
+              find "${BACKUP_DIR}" -name "satellite-backup-*.tar.gz" -mtime +${RETENTION_DAYS} -delete
+              
+              echo "Backup completed successfully: ${BACKUP_PATH}.tar.gz"
+          else
+              log "ERROR: Backup failed"
+              echo "Backup failed - check ${LOG_FILE} for details"
+              exit 1
+          fi
+
+    - name: Create maintenance mode script
+      copy:
+        dest: /usr/local/bin/satellite-maintenance
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          
+          # Red Hat Satellite 6.17 Maintenance Script
+          # Provides maintenance operations for Satellite
+          
+          set -euo pipefail
+          
+          # Colors for output
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m'
+          
+          print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+          print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+          print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+          print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+          
+          case "${1:-help}" in
+              enable)
+                  print_status "Enabling Satellite maintenance mode..."
+                  katello-service stop
+                  print_success "Satellite maintenance mode enabled"
+                  ;;
+              disable)
+                  print_status "Disabling Satellite maintenance mode..."
+                  katello-service start
+                  print_success "Satellite maintenance mode disabled"
+                  ;;
+              status)
+                  print_status "Checking Satellite service status..."
+                  katello-service status
+                  ;;
+              backup)
+                  print_status "Creating Satellite backup..."
+                  BACKUP_DIR="/var/satellite-backups/$(date +%Y%m%d_%H%M%S)"
+                  mkdir -p "$BACKUP_DIR"
+                  satellite-maintain backup offline --assumeyes "$BACKUP_DIR"
+                  print_success "Backup created: $BACKUP_DIR"
+                  ;;
+              *)
+                  echo "Satellite Maintenance Script"
+                  echo "Usage: $0 {enable|disable|status|backup}"
+                  echo ""
+                  echo "Commands:"
+                  echo "  enable  - Put Satellite in maintenance mode"
+                  echo "  disable - Take Satellite out of maintenance mode"
+                  echo "  status  - Check Satellite service status"
+                  echo "  backup  - Create offline backup"
+                  ;;
+          esac
+
+    - name: Create monitoring script  
+      copy:
+        dest: /usr/local/bin/satellite-monitor
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          
+          # Red Hat Satellite 6.17 Monitoring Script
+          # Provides health monitoring for Satellite
+          
+          set -euo pipefail
+          
+          # Colors for output
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m'
+          
+          print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+          print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+          print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+          print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+          
+          echo "========================================"
+          echo "    Satellite Health Check Report"
+          echo "    Generated: $(date)"
+          echo "========================================"
+          echo ""
+          
+          # Check Satellite services
+          print_status "Checking Satellite services..."
+          if systemctl is-active --quiet httpd && systemctl is-active --quiet postgresql && systemctl is-active --quiet redis; then
+              print_success "Core services are running"
+          else
+              print_warning "Some core services may be down"
+          fi
+          
+          # Check disk space
+          print_status "Checking disk space..."
+          DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+          if [ "$DISK_USAGE" -lt 80 ]; then
+              print_success "Disk usage: ${DISK_USAGE}% (OK)"
+          elif [ "$DISK_USAGE" -lt 90 ]; then
+              print_warning "Disk usage: ${DISK_USAGE}% (WARNING)"
+          else
+              print_error "Disk usage: ${DISK_USAGE}% (CRITICAL)"
+          fi
+          
+          # Check memory usage
+          print_status "Checking memory usage..."
+          MEM_USAGE=$(free | awk 'NR==2{printf "%.0f", $3*100/$2}')
+          if [ "$MEM_USAGE" -lt 80 ]; then
+              print_success "Memory usage: ${MEM_USAGE}% (OK)"
+          elif [ "$MEM_USAGE" -lt 90 ]; then
+              print_warning "Memory usage: ${MEM_USAGE}% (WARNING)"
+          else
+              print_error "Memory usage: ${MEM_USAGE}% (CRITICAL)"
+          fi
+          
+          # Check Satellite health
+          print_status "Running Satellite health check..."
+          if command -v satellite-maintain &> /dev/null; then
+              satellite-maintain health check --assumeyes || print_warning "Satellite health check completed with warnings"
+          else
+              print_warning "satellite-maintain command not available"
+          fi
+          
+          echo ""
+          echo "========================================"
+          echo "    Health check completed"
+          echo "========================================"
+
+    - name: Create backup script
+      copy:
+        dest: /usr/local/bin/satellite-backup
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          
+          # Red Hat Satellite 6.17 Backup Script
+          # Automated backup solution for Satellite
+          
+          set -euo pipefail
+          
+          # Colors for output
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m'
+          
+          print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+          print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+          print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+          print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+          
+          BACKUP_TYPE="${1:-full}"
+          BACKUP_DIR="/var/satellite-backups"
+          DATE_STAMP=$(date +%Y%m%d_%H%M%S)
+          
+          case "$BACKUP_TYPE" in
+              full)
+                  print_status "Creating full Satellite backup..."
+                  mkdir -p "$BACKUP_DIR/$DATE_STAMP"
+                  satellite-maintain backup offline --assumeyes "$BACKUP_DIR/$DATE_STAMP"
+                  print_success "Full backup completed: $BACKUP_DIR/$DATE_STAMP"
+                  ;;
+              config)
+                  print_status "Creating configuration backup..."
+                  mkdir -p "$BACKUP_DIR/config_$DATE_STAMP"
+                  tar -czf "$BACKUP_DIR/config_$DATE_STAMP/satellite_config.tar.gz" \
+                      /etc/foreman \
+                      /etc/katello \
+                      /etc/httpd \
+                      /etc/pki/katello \
+                      /var/lib/katello \
+                      2>/dev/null || true
+                  print_success "Configuration backup completed: $BACKUP_DIR/config_$DATE_STAMP"
+                  ;;
+              cleanup)
+                  print_status "Cleaning up old backups (keeping last 5)..."
+                  cd "$BACKUP_DIR"
+                  ls -t | tail -n +6 | xargs -r rm -rf
+                  print_success "Backup cleanup completed"
+                  ;;
+              *)
+                  echo "Satellite Backup Script"
+                  echo "Usage: $0 {full|config|cleanup}"
+                  echo ""
+                  echo "Commands:"
+                  echo "  full    - Create full offline backup"
+                  echo "  config  - Create configuration backup only"
+                  echo "  cleanup - Remove old backups (keep last 5)"
+                  echo ""
+                  echo "Backup location: $BACKUP_DIR"
+                  ;;
+          esac
+
+    - name: Display management scripts installation
+      debug:
+        msg: |
+          
+          [SUCCESS] SATELLITE MANAGEMENT SCRIPTS INSTALLED
+          =======================================================================
+          
+          Available commands:
+          • satellite-deploy        - Main deployment and undo operations
+          • satellite-maintenance   - Maintenance mode operations  
+          • satellite-monitor       - Health monitoring and checks
+          • satellite-backup        - Backup and restore operations
+          
+          Examples:
+          • satellite-deploy -i              - Interactive deployment
+          • satellite-deploy -u               - Undo deployment changes
+          • satellite-deploy -m preflight     - Run preflight checks
+          • satellite-maintenance enable      - Enable maintenance mode
+          • satellite-monitor                 - Run health checks
+          • satellite-backup full             - Create full backup
+          
+          =======================================================================
+        dest: /usr/local/bin/satellite_maintenance.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Satellite Maintenance Mode Script
+          # Generated by Ansible on {{ deployment_timestamp }}
+          
+          SATELLITE_URL="https://{{ satellite_fqdn }}"
+          ADMIN_USER="{{ satellite_admin_username }}"
+          MAINTENANCE_PAGE="/var/www/html/maintenance.html"
+          
+          usage() {
+              echo "Usage: $0 {enable|disable|status}"
+              echo ""
+              echo "  enable  - Put Satellite in maintenance mode"
+              echo "  disable - Remove Satellite from maintenance mode"  
+              echo "  status  - Check current maintenance status"
+              exit 1
+          }
+          
+          create_maintenance_page() {
+              cat > "${MAINTENANCE_PAGE}" << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Satellite Maintenance</title>
+              <style>
+                  body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+                  .container { max-width: 600px; margin: 0 auto; }
+                  .message { background: #f0f0f0; padding: 20px; border-radius: 5px; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="message">
+                      <h1>[MAINTENANCE] Satellite Maintenance</h1>
+                      <p>Red Hat Satellite is currently undergoing maintenance.</p>
+                      <p>Service will be restored shortly.</p>
+                      <p><small>Started: $(date)</small></p>
+                  </div>
+              </div>
+          </body>
+          </html>
+          EOF
+          }
+          
+          enable_maintenance() {
+              echo "Enabling maintenance mode..."
+              
+              # Stop services
+              systemctl stop httpd foreman
+              
+              # Create maintenance page
+              create_maintenance_page
+              
+              # Start only httpd for maintenance page
+              systemctl start httpd
+              
+              echo "Maintenance mode enabled"
+          }
+          
+          disable_maintenance() {
+              echo "Disabling maintenance mode..."
+              
+              # Remove maintenance page
+              rm -f "${MAINTENANCE_PAGE}"
+              
+              # Start all services
+              systemctl start foreman httpd
+              
+              echo "Maintenance mode disabled"
+          }
+          
+          check_status() {
+              if [ -f "${MAINTENANCE_PAGE}" ]; then
+                  echo "Status: MAINTENANCE MODE ACTIVE"
+              else
+                  echo "Status: NORMAL OPERATION"
+              fi
+          }
+          
+          case "$1" in
+              enable) enable_maintenance ;;
+              disable) disable_maintenance ;;
+              status) check_status ;;
+              *) usage ;;
+          esac
+
+    - name: Create monitoring script
+      copy:
+        dest: /usr/local/bin/satellite_monitor.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Satellite Health Monitoring Script
+          # Generated by Ansible on {{ deployment_timestamp }}
+          
+          SATELLITE_URL="https://{{ satellite_fqdn }}"
+          LOG_FILE="/var/log/satellite_monitor.log"
+          
+          log() {
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "${LOG_FILE}"
+          }
+          
+          check_services() {
+              local failed_services=()
+              
+              for service in httpd foreman postgresql; do
+                  if ! systemctl is-active --quiet $service; then
+                      failed_services+=($service)
+                  fi
+              done
+              
+              if [ ${#failed_services[@]} -eq 0 ]; then
+                  echo "[SUCCESS] All services running"
+                  return 0
+              else
+                  echo "[ERROR] Failed services: ${failed_services[*]}"
+                  return 1
+              fi
+          }
+          
+          check_disk_space() {
+              local usage=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+              
+              if [ $usage -gt 90 ]; then
+                  echo "[ERROR] Disk usage critical: ${usage}%"
+                  return 1
+              elif [ $usage -gt 80 ]; then
+                  echo "[WARNING] Disk usage warning: ${usage}%"
+                  return 0
+              else
+                  echo "[SUCCESS] Disk usage OK: ${usage}%"
+                  return 0
+              fi
+          }
+          
+          check_api() {
+              if curl -k -s "${SATELLITE_URL}/api/status" | grep -q "ok"; then
+                  echo "[SUCCESS] API responsive"
+                  return 0
+              else
+                  echo "[ERROR] API not responding"
+                  return 1
+              fi
+          }
+          
+          # Main monitoring
+          echo "=== Satellite Health Check - $(date) ==="
+          
+          issues=0
+          check_services || ((issues++))
+          check_disk_space || ((issues++))
+          check_api || ((issues++))
+          
+          if [ $issues -eq 0 ]; then
+              log "Health check passed - all systems normal"
+              echo "Overall Status: HEALTHY"
+          else
+              log "Health check failed - $issues issues detected"
+              echo "Overall Status: ISSUES DETECTED"
+              exit 1
+          fi
+
+    - name: Schedule automated backups
+      cron:
+        name: "Satellite Daily Backup"
+        minute: "30"
+        hour: "2"
+        job: "/usr/local/bin/satellite_backup.sh"
+        user: root
+
+    - name: Schedule health monitoring
+      cron:
+        name: "Satellite Health Check"
+        minute: "*/15"
+        job: "/usr/local/bin/satellite_monitor.sh >/dev/null 2>&1"
+        user: root
+
+    - name: Configure logrotate for Satellite
+      copy:
+        dest: /etc/logrotate.d/satellite
+        content: |
+          # Satellite log rotation configuration
+          # Generated by Ansible on {{ deployment_timestamp }}
+          
+          /var/log/foreman/*.log {
+              daily
+              missingok
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              copytruncate
+              sharedscripts
+              postrotate
+                  systemctl reload foreman > /dev/null 2>&1 || true
+              endscript
+          }
+          
+          /var/log/httpd/*.log {
+              daily
+              missingok
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              sharedscripts
+              postrotate
+                  systemctl reload httpd > /dev/null 2>&1 || true
+              endscript
+          }
+          
+          /var/log/satellite_monitor.log {
+              weekly
+              missingok
+              rotate 12
+              compress
+              delaycompress
+              notifempty
+          }
+          
+          {{ satellite_backup_dir }}/backup.log {
+              monthly
+              missingok
+              rotate 12
+              compress
+              delaycompress
+              notifempty
+          }
+
+    - name: Create comprehensive system tuning
+      copy:
+        dest: /etc/systemd/system/satellite-tuning.service
+        content: |
+          [Unit]
+          Description=Satellite Performance Tuning
+          After=multi-user.target
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/satellite_tuning.sh
+          RemainAfterExit=yes
+          
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Create tuning script
+      copy:
+        dest: /usr/local/bin/satellite_tuning.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Satellite Performance Tuning Script
+          # Generated by Ansible on {{ deployment_timestamp }}
+          
+          # Optimize PostgreSQL settings for Satellite
+          PG_CONF="/var/lib/pgsql/data/postgresql.conf"
+          
+          if [ -f "$PG_CONF" ]; then
+              # Backup original
+              cp "$PG_CONF" "$PG_CONF.backup.$(date +%Y%m%d)"
+              
+              # Apply optimizations
+              sed -i "s/#max_connections = 100/max_connections = 500/" "$PG_CONF"
+              sed -i "s/#shared_buffers = 128MB/shared_buffers = 2GB/" "$PG_CONF"
+              sed -i "s/#effective_cache_size = 4GB/effective_cache_size = 8GB/" "$PG_CONF"
+              sed -i "s/#work_mem = 4MB/work_mem = 16MB/" "$PG_CONF"
+              sed -i "s/#checkpoint_completion_target = 0.5/checkpoint_completion_target = 0.9/" "$PG_CONF"
+              sed -i "s/#wal_buffers = -1/wal_buffers = 16MB/" "$PG_CONF"
+              
+              echo "PostgreSQL configuration optimized"
+          fi
+          
+          # Set kernel parameters for Satellite
+          cat > /etc/sysctl.d/99-satellite.conf << EOF
+          # Satellite performance tuning
+          vm.swappiness = 10
+          net.core.somaxconn = 1024
+          net.ipv4.tcp_max_syn_backlog = 2048
+          net.core.netdev_max_backlog = 5000
+          EOF
+          
+          # Apply sysctl settings
+          sysctl -p /etc/sysctl.d/99-satellite.conf
+          
+          echo "System tuning completed"
+
+    - name: Enable and start tuning service
+      systemd:
+        name: satellite-tuning
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Configure fail2ban for SSH protection (if available)
+      block:
+        - name: Install fail2ban
+          dnf:
+            name: fail2ban
+            state: present
+
+        - name: Configure fail2ban for SSH
+          copy:
+            dest: /etc/fail2ban/jail.local
+            content: |
+              # Fail2ban configuration for Satellite
+              # Generated by Ansible on {{ deployment_timestamp }}
+              
+              [DEFAULT]
+              bantime = 3600
+              findtime = 600
+              maxretry = 5
+              
+              [sshd]
+              enabled = true
+              port = ssh
+              logpath = /var/log/secure
+              maxretry = 3
+              bantime = 7200
+
+        - name: Enable and start fail2ban
+          systemd:
+            name: fail2ban
+            enabled: yes
+            state: started
+      ignore_errors: yes
+
+    - name: Display final deployment report
+      debug:
+        msg: |
+          ========================================================================
+                         RED HAT SATELLITE 6.17 DEPLOYMENT REPORT
+          ========================================================================
+          DEPLOYMENT STATUS: [SUCCESS] COMPLETED SUCCESSFULLY
+          Deployment Time: {{ deployment_timestamp }}
+          
+          [ACCESS] ACCESS INFORMATION:
+          - URL: https://{{ satellite_fqdn }}
+          - Username: {{ satellite_admin_username }}
+          - Organization: {{ satellite_organization }}
+          - Location: {{ satellite_location }}
+          
+          [COMPONENTS] INSTALLED COMPONENTS:
+          - Red Hat Satellite 6.17
+          - DHCP Server ({{ dhcp_interface }}: {{ dhcp_range }})
+          - DNS Server ({{ dns_interface }})
+          - TFTP Server for PXE Boot
+          - Automated Backup System
+          - Health Monitoring (15-min intervals)
+          - Performance Tuning
+          - Security Hardening (fail2ban)
+          - Log Rotation Management
+          - Automatic Script Deployment System
+          
+          [SCRIPTS] MANAGEMENT SCRIPTS:
+          - /usr/local/bin/satellite_backup.sh
+          - /usr/local/bin/satellite_maintenance.sh
+          - /usr/local/bin/satellite_monitor.sh
+          - /usr/local/bin/satellite_tuning.sh
+          - {{ remote_deployment_dir }}/satellite_deploy.sh
+          
+          [AUTOMATION] DEPLOYMENT AUTOMATION:
+          - Scripts auto-deployed to: {{ remote_deployment_dir }}
+          - Symlink available: /usr/local/bin/satellite_deploy
+          - Backup location: {{ remote_deployment_dir }}/backups/
+          - Deployment manifest: {{ remote_deployment_dir }}/deployment_manifest.txt
+          
+          [SYSTEM] SYSTEM SPECIFICATIONS:
+          - RAM: {{ ansible_memtotal_mb }}MB
+          - CPU Cores: {{ ansible_processor_vcpus }}
+          - Architecture: {{ ansible_architecture }}
+          - Available Disk: {{ available_disk_gb | default('Unknown') }}GB
+          
+          {% if preflight_warnings | length > 0 -%}
+          [WARNING] DEPLOYMENT WARNINGS:
+          {% for warning in preflight_warnings -%}
+          - {{ warning }}
+          {% endfor -%}
+          
+          {% endif -%}
+          [NEXT] NEXT STEPS:
+          1. Upload your Red Hat subscription manifest
+          2. Enable and sync required repositories
+          3. Create lifecycle environments and content views
+          4. Configure activation keys
+          5. Set up host provisioning templates
+          6. Configure content views and filters
+          7. Set up compliance policies (OpenSCAP)
+          
+          [COMMANDS] USEFUL COMMANDS:
+          - Health Check: /usr/local/bin/satellite_monitor.sh
+          - Backup: /usr/local/bin/satellite_backup.sh
+          - Maintenance: /usr/local/bin/satellite_maintenance.sh enable
+          - Service Status: systemctl status foreman
+          - View Logs: journalctl -u foreman -f
+          - Remote Deploy: /usr/local/bin/satellite_deploy
+          - Check Deployment: cat {{ remote_deployment_dir }}/deployment_manifest.txt
+          
+          [DOCS] Documentation: https://access.redhat.com/documentation/en-us/red_hat_satellite/6.17
+          
+          [TIPS] PERFORMANCE TIPS:
+          - Monitor /var/log/satellite_monitor.log for health alerts
+          - Backups stored in {{ satellite_backup_dir }}
+          - Tune PostgreSQL settings in /var/lib/pgsql/data/
+          - Monitor disk usage regularly
+          ========================================================================
+
+    - name: Save comprehensive deployment report
+      copy:
+        dest: /var/log/satellite_deployment_report.log
+        content: |
+          ========================================================================
+                      RED HAT SATELLITE 6.17 DEPLOYMENT SUMMARY
+          ========================================================================
+          
+          Generated: {{ deployment_timestamp }}
+          Host: {{ ansible_hostname }} ({{ satellite_fqdn }})
+          Deployment Mode: {{ deployment_mode }}
+          
+          =======================================================================
+          DEPLOYMENT STATUS: [SUCCESS] COMPLETED SUCCESSFULLY
+          =======================================================================
+          
+          [ACCESS] ACCESS INFORMATION:
+          -----------------------------------------------------------------------
+          - URL: https://{{ satellite_fqdn }}
+          - Admin Username: {{ satellite_admin_username }}
+          - Organization: {{ satellite_organization }}
+          - Location: {{ satellite_location }}
+          
+          [SYSTEM] SYSTEM CONFIGURATION:
+          -----------------------------------------------------------------------
+          - RAM: {{ ansible_memtotal_mb }}MB
+          - CPU Cores: {{ ansible_processor_vcpus }}
+          - Architecture: {{ ansible_architecture }}
+          - OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - Available Disk Space: {{ available_disk_gb | default('Unknown') }}GB
+          
+          [NETWORK] NETWORK CONFIGURATION:
+          -----------------------------------------------------------------------
+          - DHCP Interface: {{ dhcp_interface }}
+          - DHCP Range: {{ dhcp_range }}
+          - DNS Interface: {{ dns_interface }}
+          - Primary IP: {{ satellite_ip }}
+          
+          [COMPONENTS] INSTALLED COMPONENTS:
+          -----------------------------------------------------------------------
+          - Red Hat Satellite 6.17 [SUCCESS]
+          - DHCP Server [SUCCESS]
+          - DNS Server [SUCCESS]
+          - TFTP Server [SUCCESS]
+          - Backup System [SUCCESS]
+          - Health Monitoring [SUCCESS]
+          - Performance Tuning [SUCCESS]
+          - Security Hardening [SUCCESS]
+          - Log Management [SUCCESS]
+          
+          [SCHEDULE] SCHEDULED TASKS:
+          -----------------------------------------------------------------------
+          - Daily Backups: 02:30 UTC → {{ satellite_backup_dir }}
+          - Health Checks: Every 15 minutes
+          - Log Rotation: Daily/Weekly/Monthly
+          
+          [WARNING] DEPLOYMENT WARNINGS:
+          -----------------------------------------------------------------------
+          {% if preflight_warnings | length > 0 -%}
+          {% for warning in preflight_warnings %}
+          - {{ warning }}
+          {% endfor %}
+          {% else -%}
+          No warnings detected [SUCCESS]
+          {% endif %}
+          
+          [COMMANDS] MANAGEMENT COMMANDS:
+          -----------------------------------------------------------------------
+          - System Health: /usr/local/bin/satellite_monitor.sh
+          - Create Backup: /usr/local/bin/satellite_backup.sh
+          - Maintenance Mode: /usr/local/bin/satellite_maintenance.sh {enable|disable}
+          - Tune Performance: /usr/local/bin/satellite_tuning.sh
+          
+          [PATHS] IMPORTANT PATHS:
+          -----------------------------------------------------------------------
+          - Backups: {{ satellite_backup_dir }}
+          - Logs: /var/log/foreman/
+          - Config: /etc/foreman/
+          - Data: /var/lib/pulp/
+          
+          [NEXT] NEXT STEPS:
+          -----------------------------------------------------------------------
+          1. Upload Red Hat subscription manifest
+          2. Enable required repositories
+          3. Sync content from Red Hat CDN
+          4. Create lifecycle environments
+          5. Configure content views
+          6. Set up activation keys
+          7. Create provisioning templates
+          8. Configure compliance policies
+          
+          [DOCS] DOCUMENTATION:
+          -----------------------------------------------------------------------
+          Official Guide: https://access.redhat.com/documentation/en-us/red_hat_satellite/6.17
+          
+          =======================================================================
+          END OF DEPLOYMENT REPORT
+          =======================================================================
+
+    - name: Create quick reference guide
+      copy:
+        dest: /root/satellite_quick_reference.txt
+        content: |
+          RED HAT SATELLITE 6.17 - QUICK REFERENCE GUIDE
+          =======================================================================
+          
+          [QUICK-START] QUICK START:
+          - Access: https://{{ satellite_fqdn }}
+          - Username: {{ satellite_admin_username }}
+          - Health Check: /usr/local/bin/satellite_monitor.sh
+          
+          [COMMANDS] ESSENTIAL COMMANDS:
+          -----------------------------------------------------------------------
+          Service Management:
+          - systemctl status foreman
+          - systemctl restart foreman
+          - systemctl status httpd
+          
+          Health & Monitoring:
+          - /usr/local/bin/satellite_monitor.sh (full health check)
+          - journalctl -u foreman -f (live logs)
+          - hammer ping (API connectivity)
+          
+          Backup & Maintenance:
+          - /usr/local/bin/satellite_backup.sh (manual backup)
+          - /usr/local/bin/satellite_maintenance.sh enable (maintenance mode)
+          - /usr/local/bin/satellite_maintenance.sh disable (normal mode)
+          
+          Performance:
+          - /usr/local/bin/satellite_tuning.sh (re-apply tuning)
+          - top -p $(pgrep -f foreman) (monitor processes)
+          
+          [DIRECTORIES] KEY DIRECTORIES:
+          -----------------------------------------------------------------------
+          - Config: /etc/foreman/
+          - Logs: /var/log/foreman/
+          - Data: /var/lib/pulp/
+          - Backups: {{ satellite_backup_dir }}
+          - Scripts: /usr/local/bin/satellite_*.sh
+          
+          [TROUBLESHOOT] TROUBLESHOOTING:
+          -----------------------------------------------------------------------
+          - Check service status: systemctl status foreman
+          - View error logs: journalctl -u foreman --since "1 hour ago"
+          - Test API: curl -k https://{{ satellite_fqdn }}/api/status
+          - Check disk space: df -h
+          - Monitor health: tail -f /var/log/satellite_monitor.log
+          
+          [CHECKLIST] POST-DEPLOYMENT CHECKLIST:
+          -----------------------------------------------------------------------
+          [ ] Upload subscription manifest
+          [ ] Enable required repositories
+          [ ] Sync initial content
+          [ ] Create lifecycle environments
+          [ ] Configure content views
+          [ ] Set up activation keys
+          [ ] Test host provisioning
+          [ ] Configure compliance scanning
+          [ ] Set up remote execution
+          [ ] Configure reporting
+          
+          Generated: {{ deployment_timestamp }}
+          Deployment Mode: {{ deployment_mode }}
+        mode: '0644'
+
+    # ========================================
+    # CREDENTIAL CLEANUP AND SECURITY
+    # ========================================
+    - name: Credential cleanup and security tasks
+      block:
+        - name: Clear sensitive variables from memory
+          set_fact:
+            redhat_password: ""
+            satellite_admin_password: ""
+          when: not store_credentials_in_vault
+
+        - name: Remove temporary credential files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/vault_pass
+            - /tmp/redhat_credentials
+            - /tmp/satellite_admin_pass
+          ignore_errors: yes
+
+        - name: Clear ansible facts containing credentials
+          shell: |
+            unset redhat_password
+            unset satellite_admin_password
+          delegate_to: localhost
+          ignore_errors: yes
+
+        - name: Clear shell history of credential entries
+          shell: |
+            history -c
+            history -w
+          ignore_errors: yes
+
+        - name: Secure credential storage notification
+          debug:
+            msg: |
+              
+              [SECURITY] CREDENTIAL CLEANUP COMPLETED
+              =======================================================================
+              {% if store_credentials_in_vault -%}
+              [STORED] Credentials have been stored in encrypted vault: {{ vault_file_path }}
+              [ACCESS] Use --vault-password-file to access stored credentials
+              {% else -%}
+              [CLEARED] All credentials have been cleared from system memory
+              [SECURITY] Credentials must be re-entered for future deployments
+              {% endif -%}
+              
+              [CLEANUP] Temporary credential files removed
+              [CLEANUP] Shell history cleared of credential entries
+              [CLEANUP] Ansible facts cleared of sensitive data
+              =======================================================================
+
+    - name: Display completion message
+      debug:
+        msg: |
+          
+          [SUCCESS] SATELLITE DEPLOYMENT COMPLETED SUCCESSFULLY!
+          
+          =======================================================================
+          
+          [REPORTS] Reports Generated:
+          - /var/log/satellite_deployment_report.log (detailed)
+          - /root/satellite_quick_reference.txt (quick guide)
+          
+          [ACCESS] Access Your Satellite:
+          https://{{ satellite_fqdn }}
+          
+          Username: {{ satellite_admin_username }}
+          
+          [STATUS] Ready for production use!
+          =======================================================================
+

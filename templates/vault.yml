@@ -1,0 +1,89 @@
+# Red Hat Satellite Vault File - Encrypted Credentials
+# This file should be encrypted with ansible-vault
+# Command: ansible-vault encrypt vars/vault.yml
+
+# ========================================
+# Red Hat Subscription Credentials
+# ========================================
+# Replace with your actual Red Hat Customer Portal credentials
+vault_redhat_username: "your-redhat-username@example.com"
+vault_redhat_password: "your-redhat-password"
+
+# ========================================
+# Satellite Admin Credentials
+# ========================================
+# Default admin credentials for Satellite
+vault_satellite_admin_password: "redhat"
+
+# ========================================
+# Default System Passwords
+# ========================================
+# Default root password for deployed systems
+vault_default_root_password: "r3dh4t7!"
+
+# Encrypted version of the default root password (generate with: python -c "import crypt; print(crypt.crypt('r3dh4t7!', crypt.mksalt(crypt.METHOD_SHA512)))")
+vault_default_root_password_encrypted: "$6$rounds=656000$salt$encrypted_password_hash"
+
+# ========================================
+# SSL/TLS Certificates (if custom)
+# ========================================
+# Custom SSL certificate content (optional)
+vault_ssl_certificate_content: |
+  -----BEGIN CERTIFICATE-----
+  # Your SSL certificate content here
+  -----END CERTIFICATE-----
+
+# Custom SSL private key content (optional)
+vault_ssl_private_key_content: |
+  -----BEGIN PRIVATE KEY-----
+  # Your SSL private key content here
+  -----END PRIVATE KEY-----
+
+# ========================================
+# Red Hat Manifest (Base64 encoded)
+# ========================================
+# Your Red Hat subscription manifest file content (base64 encoded)
+# Generate with: base64 -w 0 /path/to/your/manifest.zip
+vault_manifest_file_content: "base64-encoded-manifest-content-here"
+
+# ========================================
+# Database Credentials (if external)
+# ========================================
+# External PostgreSQL database credentials (if not using embedded)
+vault_database_username: "satellite"
+vault_database_password: "your-database-password"
+vault_database_host: "database.example.com"
+vault_database_name: "satellite"
+
+# ========================================
+# LDAP/Active Directory Integration (optional)
+# ========================================
+# LDAP bind credentials
+vault_ldap_bind_dn: "cn=satellite,ou=service-accounts,dc=example,dc=com"
+vault_ldap_bind_password: "your-ldap-bind-password"
+
+# ========================================
+# External Authentication Tokens
+# ========================================
+# Red Hat Insights registration token
+vault_insights_token: "your-insights-registration-token"
+
+# Red Hat Cloud Services token
+vault_cloud_services_token: "your-cloud-services-token"
+
+# ========================================
+# Backup and Recovery Credentials
+# ========================================
+# Backup storage credentials
+vault_backup_username: "backup-user"
+vault_backup_password: "your-backup-password"
+vault_backup_encryption_key: "your-backup-encryption-key"
+
+# ========================================
+# NOTES FOR SECURITY
+# ========================================
+# 1. Always encrypt this file with: ansible-vault encrypt vars/vault.yml
+# 2. Never commit this file unencrypted to version control
+# 3. Use strong, unique passwords for all accounts
+# 4. Rotate passwords regularly
+# 5. Consider using external secret management systems for production
