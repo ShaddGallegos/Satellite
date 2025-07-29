@@ -1,29 +1,35 @@
----
+
 # Red Hat Satellite 6.17 Complete Setup Playbook
-# This playbook sets up Red Hat Satellite from beginning to end
+# Author: Generated for automated Satellite deployment
+
+# Red Hat Satellite 6.17 Complete Setup Playbook
 # Author: Generated for automated Satellite deployment
 # Version: 1.0
 # Date: July 2025
-- name: Red Hat Satellite 6.17 Complete Setup
-  hosts: satellite_servers
-  become: true
-  gather_facts: true
-  
-  vars_files:
-    - vars/satellite_vars.yml
-    - vars/vault.yml  # Contains encrypted credentials
-  
-  tasks:
-    - name: Ensure necessary directories exist
-      ansible.builtin.file:
-- name: Complete Red Hat Satellite 6.17 Setup
-  hosts: satellite_servers
-  become: true
-  gather_facts: true
-  vars_files:
-    - vars/satellite_vars.yml
-    - vars/vault.yml  # Contains encrypted credentials
 
+---
+- name: Red Hat Satellite 6.17 Complete Setup
+  hosts: "{{ remote_ip }}"
+  vars_prompt:
+    - name: remote_ip
+      prompt: "Enter the IP address of the remote host to install Satellite 6.17 on:"
+      private: no
+    - name: remote_user
+      prompt: "Enter the SSH username for the remote host:"
+      private: no
+    - name: remote_password
+      prompt: "Enter the SSH password for the remote host:"
+      private: yes
+  become: true
+  gather_facts: true
+  vars_files:
+    - vars/satellite_vars.yml
+    - vars/vault.yml  # Contains encrypted credentials
+  vars:
+    ansible_user: "{{ remote_user }}"
+    ansible_ssh_pass: "{{ remote_password }}"
+    ansible_become_pass: "{{ remote_password }}"
+    ansible_port: 22
   pre_tasks:
     - name: Verify system requirements
       assert:
@@ -32,12 +38,10 @@
           - ansible_processor_vcpus >= 4   # 4 CPU cores minimum
           - ansible_architecture == "x86_64"
         fail_msg: "System does not meet minimum requirements for Satellite"
-
     - name: Check disk space requirements
       shell: df -h / | awk 'NR==2 {print $4}' | sed 's/G//'
       register: disk_space
       failed_when: disk_space.stdout|int < 120  # 120GB minimum
-
   tasks:
     # ========================================
     # PHASE 1: System Preparation
@@ -45,12 +49,7 @@
     - name: Phase 1 - System Preparation
       debug:
         msg: "Starting Phase 1: System Preparation"
-
-    - name: Set hostname
-      hostname:
-        name: "{{ satellite_hostname }}"
-
-    - name: Update /etc/hosts file
+    # ...existing code...
       lineinfile:
         path: /etc/hosts
         line: "{{ satellite_ip }} {{ satellite_fqdn }} {{ satellite_hostname }}"
@@ -97,34 +96,8 @@
         key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
       ignore_errors: true
 
-    # ========================================
-    # PHASE 2: Repository and Package Setup
-    # ========================================
-    - name: Phase 2 - Repository and Package Setup
-      debug:
-        msg: "Starting Phase 2: Repository and Package Setup"
-
-    - name: Register system with Red Hat
-      community.general.redhat_subscription:
-        state: present
-        username: "{{ redhat_username }}"
-        password: "{{ redhat_password }}"
-        auto_attach: true
-
-    - name: Enable required repositories
-      community.general.rhsm_repository:
-        name: "{{ item }}"
-        state: enabled
-      loop:
-        - rhel-9-for-x86_64-appstream-rpms
-        - rhel-9-for-x86_64-baseos-rpms
-        - satellite-6.17-for-rhel-9-x86_64-rpms
-        - satellite-maintenance-6.17-for-rhel-9-x86_64-rpms
-
     - name: Update all packages
       dnf:
-        name: "*"
-        state: latest
         name: "*"
         state: latest
 
