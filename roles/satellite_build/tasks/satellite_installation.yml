@@ -42,8 +42,16 @@
     --foreman-initial-admin-username {{ satellite_admin_user }}
     --foreman-initial-admin-password {{ satellite_config_vars.admin_password | default('changeme') }}
     --foreman-proxy-dhcp true
+    --foreman-proxy-dhcp-interface {{ provisioning_interface }}
+    --foreman-proxy-dhcp-range "{{ dhcp_range_start }} {{ dhcp_range_end }}"
+    --foreman-proxy-dhcp-gateway {{ gateway }}
+    --foreman-proxy-dhcp-nameservers "{{ dns_servers[0] }}"
     --foreman-proxy-dns true
+    --foreman-proxy-dns-interface {{ provisioning_interface }}
+    --foreman-proxy-dns-zone {{ network_domain }}
+    --foreman-proxy-dns-forwarders "{{ dns_servers[0] }}"
     --foreman-proxy-tftp true
+    --foreman-proxy-tftp-servername {{ satellite_hostname }}
   become: true
   register: satellite_install_result
   notify: restart satellite services

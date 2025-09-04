@@ -27,15 +27,15 @@ provisioning_interface: "{{ discovered_provisioning_interface | default('enp2s0'
 network_domain: "{{ satellite_domain }}"
 network_range: "10.168.0.0/16"
 netmask: "255.255.0.0"
-gateway: "10.168.0.1"
+gateway: "10.168.151.1"
 dns_servers:
-  - "10.168.0.1"
+  - "10.168.151.1"
   - "8.8.8.8"
   - "8.8.4.4"
 
 # DHCP Configuration
-dhcp_range_start: "10.168.1.100"
-dhcp_range_end: "10.168.1.200"
+dhcp_range_start: "10.168.151.100"
+dhcp_range_end: "10.168.151.200"
 
 # Role Control Flags
 satellite_build_enabled: true

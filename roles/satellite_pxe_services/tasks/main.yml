@@ -26,19 +26,19 @@
 - name: Display PXE services summary
   ansible.builtin.debug:
     msg: |
-      🎯 SATELLITE PXE SERVICES ROLE COMPLETE:
+      SATELLITE PXE SERVICES ROLE COMPLETE:
       
-      ✅ Services Configured:
+      Services Configured:
       • TFTP Server: {{ 'Enabled' if configure_tftp else 'Disabled' }}
       • DHCP Server: {{ 'Enabled' if configure_dhcp else 'Disabled' }}
       • LibVirt: {{ 'Enabled' if configure_libvirt else 'Disabled' }}
       • Satellite API: {{ 'Configured' if configure_satellite_api else 'Skipped' }}
       
-      🌐 Network Configuration:
+      Network Configuration:
       • Interface: {{ primary_interface }}
       • DHCP Range: {{ dhcp_range_start }} - {{ dhcp_range_end }}
       • PXE Server: {{ satellite_ip }}
       • LibVirt Network: {{ libvirt_network }}
       
-      🚀 Ready for Node Provisioning!
+      Ready for Node Provisioning!
   tags: ['summary']

@@ -41,12 +41,12 @@
     - name: Display provisioning summary
       ansible.builtin.debug:
         msg: |
-          🎯 NODE PROVISIONING WORKFLOW COMPLETE
+          NODE PROVISIONING WORKFLOW COMPLETE
           ======================================
           
-          📊 Provisioned Nodes:
+          Provisioned Nodes:
           {% for node in provision_nodes %}
           • {{ node.name }}: {{ node.compute_profile }} ({{ node.cpus }}vCPU, {{ node.memory_gb }}GB RAM)
           {% endfor %}
           
-          🚀 All nodes are being provisioned via Satellite PXE services!
+          All nodes are being provisioned via Satellite PXE services!

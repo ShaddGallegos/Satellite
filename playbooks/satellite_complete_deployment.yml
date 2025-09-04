@@ -26,18 +26,18 @@
     - name: Display workflow banner
       ansible.builtin.debug:
         msg: |
-          🚀 RED HAT SATELLITE 6.17 COMPLETE DEPLOYMENT WORKFLOW
+          RED HAT SATELLITE 6.17 COMPLETE DEPLOYMENT WORKFLOW
           ===========================================================
           
-          📋 Deployment Phases:
+          Deployment Phases:
           {% for phase in deployment_phases %}
           • {{ loop.index }}. {{ phase.name }} ({{ phase.role }})
           {% endfor %}
           
-          🎯 Target Server: {{ inventory_hostname }}
-          📅 Started: {{ ansible_date_time.iso8601 }}
+          Target Server: {{ inventory_hostname }}
+          Started: {{ ansible_date_time.iso8601 }}
           
-          ⚡ Beginning automated deployment...
+          Beginning automated deployment...
 
     - name: Validate target server requirements
       ansible.builtin.assert:
@@ -79,29 +79,29 @@
     - name: Display deployment summary
       ansible.builtin.debug:
         msg: |
-          🎯 SATELLITE 6.17 DEPLOYMENT COMPLETE!
+          SATELLITE 6.17 DEPLOYMENT COMPLETE!
           ========================================
           
-          ✅ Deployment Status: {{ 'SUCCESS' if satellite_ping.status == 200 else 'PARTIAL' }}
-          🌐 Satellite URL: https://{{ inventory_hostname }}
-          👤 Admin User: {{ satellite_admin_user | default('admin') }}
-          🏢 Organization: {{ satellite_organization | default('RedHat') }}
-          📍 Location: {{ satellite_location | default('Denver') }}
+          Deployment Status: {{ 'SUCCESS' if satellite_ping.status == 200 else 'PARTIAL' }}
+          Satellite URL: https://{{ inventory_hostname }}
+          Admin User: {{ satellite_admin_user | default('admin') }}
+          Organization: {{ satellite_organization | default('RedHat') }}
+          Location: {{ satellite_location | default('Denver') }}
           
-          📋 Deployed Components:
-          • ✅ Satellite Server Installation
-          • ✅ PXE Services (TFTP, DHCP, LibVirt)
-          • ✅ Content Management (Repositories, Content Views)
-          • ✅ Activation Keys and Lifecycle Environments
+          Deployed Components:
+          • Satellite Server Installation
+          • PXE Services (TFTP, DHCP, LibVirt)
+          • Content Management (Repositories, Content Views)
+          • Activation Keys and Lifecycle Environments
           
-          🚀 Your Satellite server is ready for production use!
+          Your Satellite server is ready for production use!
           
-          📖 Next Steps:
+          Next Steps:
           1. Access Web UI: https://{{ inventory_hostname }}
           2. Configure additional content as needed
           3. Begin node provisioning workflows
           
-          ⏱️  Deployment completed: {{ ansible_date_time.iso8601 }}
+          Deployment completed: {{ ansible_date_time.iso8601 }}
 
     - name: Save deployment information
       ansible.builtin.copy:
@@ -122,10 +122,10 @@
           - **Location**: {{ satellite_location | default('Denver') }}
           
           ## Configured Services
-          - Satellite Server Installation ✅
-          - PXE Services (TFTP, DHCP, LibVirt) ✅
-          - Content Management ✅
-          - Activation Keys ✅
+          - Satellite Server Installation [COMPLETE]
+          - PXE Services (TFTP, DHCP, LibVirt) [COMPLETE]
+          - Content Management [COMPLETE]
+          - Activation Keys [COMPLETE]
           
           ## Network Configuration
           - **Internet Interface**: {{ internet_interface | default('auto-detected') }}

@@ -153,27 +153,27 @@
 - name: Display PXE services configuration status
   ansible.builtin.debug:
     msg: |
-      🔧 PXE SERVICES CONFIGURATION STATUS:
+      PXE SERVICES CONFIGURATION STATUS:
       
-      📦 Services Installed and Running:
-      • TFTP Server (xinetd): ✅ Active
-      • DHCP Server: ✅ Active  
-      • Libvirt: ✅ Active
+      Services Installed and Running:
+      • TFTP Server (xinetd): [ACTIVE]
+      • DHCP Server: [ACTIVE]
+      • Libvirt: [ACTIVE]
       
-      🌐 Network Configuration:
+      Network Configuration:
       • Interface: {{ primary_interface }}
       • DHCP Range: {{ dhcp_range_start }} - {{ dhcp_range_end }}
       • PXE Server: {{ satellite_ip }}
       • Libvirt Network: {{ libvirt_network }}
       
-      📁 PXE Files:
+      PXE Files:
       • TFTP Root: /var/lib/tftpboot
-      • Boot Files: ✅ Configured
-      • Default Config: ✅ Created
+      • Boot Files: [CONFIGURED]
+      • Default Config: [CREATED]
       
-      🔥 Firewall:
-      • TFTP (69/udp): ✅ Open
-      • DHCP (67-68/udp): ✅ Open
-      • Libvirt (16509/tcp): ✅ Open
+      Firewall:
+      • TFTP (69/udp): [OPEN]
+      • DHCP (67-68/udp): [OPEN]
+      • Libvirt (16509/tcp): [OPEN]
       
-      🚀 Ready for Node Provisioning!
+      Ready for Node Provisioning!

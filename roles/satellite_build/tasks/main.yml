@@ -32,9 +32,9 @@
 - name: Display installation summary
   ansible.builtin.debug:
     msg: |
-      🎯 SATELLITE BUILD ROLE COMPLETE:
+      SATELLITE BUILD ROLE COMPLETE:
       
-      ✅ Installation Summary:
+      Installation Summary:
       • Satellite Server: {{ satellite_hostname }}
       • Admin User: {{ satellite_admin_user }}
       • Organization: {{ satellite_organization }}
@@ -42,10 +42,10 @@
       • Internet Interface: {{ internet_interface }}
       • Provisioning Interface: {{ provisioning_interface }}
       
-      🌐 Access Information:
+      Access Information:
       • Web UI: https://{{ satellite_hostname }}
       • API: https://{{ satellite_hostname }}/api
       • Username: {{ satellite_admin_user }}
       
-      🚀 Ready for PXE Services and Content Configuration!
+      Ready for PXE Services and Content Configuration!
   tags: ['summary']

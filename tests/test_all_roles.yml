@@ -71,15 +71,15 @@
     - name: "Display Test Results"
       ansible.builtin.debug:
         msg: |
-          🧪 SATELLITE ROLES TEST RESULTS
+          SATELLITE ROLES TEST RESULTS
           ================================
           
           {% for result in test_results %}
-          {{ "✅" if result.status == "PASS" else "❌" }} {{ result.test }}: {{ result.status }}
+          {{ "[PASS]" if result.status == "PASS" else "[FAIL]" }} {{ result.test }}: {{ result.status }}
           {% if result.details != "N/A" %}   Details: {{ result.details }}{% endif %}
           {% endfor %}
           
-          📊 Summary: {{ test_results | selectattr('status', 'equalto', 'PASS') | list | length }} PASS, {{ test_results | selectattr('status', 'equalto', 'FAIL') | list | length }} FAIL
+          Summary: {{ test_results | selectattr('status', 'equalto', 'PASS') | list | length }} PASS, {{ test_results | selectattr('status', 'equalto', 'FAIL') | list | length }} FAIL
 
     - name: "Generate Test Report"
       ansible.builtin.copy:

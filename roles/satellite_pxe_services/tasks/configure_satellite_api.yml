@@ -167,26 +167,26 @@
 - name: Display Satellite API configuration results
   ansible.builtin.debug:
     msg: |
-      📋 SATELLITE API CONFIGURATION RESULTS:
+      SATELLITE API CONFIGURATION RESULTS:
       
-      🏢 Organization & Location:
+      Organization & Location:
       • Organization ID: {{ org_id }}
       • Location ID: {{ location_id }}
       
-      💽 Installation Media:
-      • RHEL_9_x86_64: {{ 'Created' if (media_result is defined and media_result.status == 201) else 'Configured' }}
+      Installation Media:
+      • RHEL_9_x86_64: {{ 'Created' if (media_result is defined and media_result.status is defined and media_result.status == 201) else 'Configured' }}
       
-      🖥️ Operating System:
+      Operating System:
       • RHEL 9.6 ID: {{ rhel_os_id }}
       
-      💻 Compute Profiles:
-      • Small/Medium/Large/XL Nodes: ✅ Configured
+      Compute Profiles:
+      • Small/Medium/Large/XL Nodes: [CONFIGURED]
       
-      🌐 Network:
-      • PXE Subnet: {{ 'Created' if (subnet_result is defined and subnet_result.status == 201) else 'Configured' }}
+      Network:
+      • PXE Subnet: {{ 'Created' if (subnet_result is defined and subnet_result.status is defined and subnet_result.status == 201) else 'Configured' }}
       • DHCP Range: {{ dhcp_range_start }} - {{ dhcp_range_end }}
       
-      🔧 Ansible Roles:
-      • Import Status: {{ 'Initiated' if (ansible_import is defined and ansible_import.status in [200, 202]) else 'Skipped' }}
+      Ansible Roles:
+      • Import Status: {{ 'Initiated' if (ansible_import is defined and ansible_import.status is defined and ansible_import.status in [200, 202]) else 'Skipped' }}
       
-      ✅ Ready for Node Host Group creation!
+      Ready for Node Host Group creation!

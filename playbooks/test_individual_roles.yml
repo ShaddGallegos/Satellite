@@ -27,15 +27,15 @@
     - name: Display test results
       ansible.builtin.debug:
         msg: |
-          🧪 SATELLITE ROLES TESTING COMPLETE
+          SATELLITE ROLES TESTING COMPLETE
           ====================================
           
-          ✅ Available roles tested:
+          Available roles tested:
           • satellite_build: Core Satellite installation
           • satellite_pxe_services: PXE and LibVirt services
           • satellite_content: Repository and content management
           
-          💡 Usage Examples:
+          Usage Examples:
           # Test only build role:
           ansible-playbook test_individual_roles.yml --tags satellite_build
           
