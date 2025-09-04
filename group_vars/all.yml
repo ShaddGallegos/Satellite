@@ -1,0 +1,75 @@
+---
+# Global variables for Satellite role-based deployment
+# These variables are shared across all Satellite roles
+
+# Satellite Server Configuration
+satellite_hostname: "{{ inventory_hostname }}"
+satellite_ip: "{{ ansible_host }}"
+satellite_domain: "{{ satellite_hostname.split('.')[1:] | join('.') if '.' in satellite_hostname else 'prod.spg' }}"
+
+# Authentication (use vault variables for production)
+satellite_admin_user: "admin"
+satellite_admin_password: "{{ vault_satellite_password | default('bj8H7ndC7$') }}"
+satellite_organization: "{{ vault_satellite_organization | default('RedHat') }}"
+satellite_location: "{{ vault_satellite_location | default('Denver') }}"
+
+# Vault Variables (override in vault file or AAP credentials)
+vault_satellite_username: "admin"
+vault_satellite_password: "bj8H7ndC7$"
+vault_satellite_organization: "RedHat"
+vault_satellite_location: "Denver"
+
+# Network Configuration (auto-detected or manually specified)
+internet_interface: "{{ ansible_default_ipv4.interface | default('enp1s0') }}"
+provisioning_interface: "{{ discovered_provisioning_interface | default('enp2s0') }}"
+
+# Network Settings
+network_domain: "{{ satellite_domain }}"
+network_range: "10.168.0.0/16"
+netmask: "255.255.0.0"
+gateway: "10.168.0.1"
+dns_servers:
+  - "10.168.0.1"
+  - "8.8.8.8"
+  - "8.8.4.4"
+
+# DHCP Configuration
+dhcp_range_start: "10.168.1.100"
+dhcp_range_end: "10.168.1.200"
+
+# Role Control Flags
+satellite_build_enabled: true
+satellite_pxe_enabled: true
+satellite_content_enabled: true
+satellite_provisioning_enabled: true
+
+# Performance Configuration
+ansible_timeout: 300
+async_timeout: 600
+async_poll_interval: 10
+
+# System Requirements
+minimum_ram_gb: 20
+minimum_disk_gb: 500
+minimum_swap_gb: 4
+
+# Collection Requirements
+required_collections:
+  - community.general
+  - ansible.posix
+  - redhat.satellite
+  - theforeman.foreman
+
+# Package Management
+unlock_packages_for_install: true
+install_python_dependencies: true
+
+# Security Configuration
+configure_firewall: true
+configure_selinux: true
+configure_insights: true
+
+# Development/Testing Settings
+development_mode: false
+skip_validation: false
+force_install: false

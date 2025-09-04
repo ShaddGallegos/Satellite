@@ -1,0 +1,51 @@
+---
+# Main tasks for satellite_build role
+
+- name: Include pre-installation checks
+  ansible.builtin.include_tasks: pre_checks.yml
+  tags: ['pre_checks', 'validation']
+
+- name: Include system preparation
+  ansible.builtin.include_tasks: system_preparation.yml
+  tags: ['system_prep', 'preparation']
+
+- name: Include network configuration
+  ansible.builtin.include_tasks: network_configuration.yml
+  tags: ['network', 'configuration']
+
+- name: Include storage validation
+  ansible.builtin.include_tasks: storage_validation.yml
+  tags: ['storage', 'validation']
+
+- name: Include user setup
+  ansible.builtin.include_tasks: user_setup.yml
+  tags: ['users', 'setup']
+
+- name: Include Satellite installation
+  ansible.builtin.include_tasks: satellite_installation.yml
+  tags: ['satellite', 'installation']
+
+- name: Include post-installation configuration
+  ansible.builtin.include_tasks: post_installation.yml
+  tags: ['post_install', 'configuration']
+
+- name: Display installation summary
+  ansible.builtin.debug:
+    msg: |
+      🎯 SATELLITE BUILD ROLE COMPLETE:
+      
+      ✅ Installation Summary:
+      • Satellite Server: {{ satellite_hostname }}
+      • Admin User: {{ satellite_admin_user }}
+      • Organization: {{ satellite_organization }}
+      • Location: {{ satellite_location }}
+      • Internet Interface: {{ internet_interface }}
+      • Provisioning Interface: {{ provisioning_interface }}
+      
+      🌐 Access Information:
+      • Web UI: https://{{ satellite_hostname }}
+      • API: https://{{ satellite_hostname }}/api
+      • Username: {{ satellite_admin_user }}
+      
+      🚀 Ready for PXE Services and Content Configuration!
+  tags: ['summary']
